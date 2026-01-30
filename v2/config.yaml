@@ -1,0 +1,18 @@
+# Billy v2 Universal Model Configuration
+    # --- Active Configuration: Ollama (Local LLM) ---
+    model:
+      provider: "ollama"
+      # URL for your Ollama server.
+      base_url: "http://llm.workshop.home:11434/v1"
+      # CORRECTED: Matching the model name from your successful curl test.
+      model_name: "llama3.2:latest"
+
+    # --- Inactive Configurations Below ---
+    # model:
+    #   provider: "openrouter"
+    #   base_url: "https://openrouter.ai/api/v1"
+    #   model_name: "anthropic/claude-3-haiku-20240307"
+
+    # model:
+    #   provider: "openai"
+    #   model_name: "gpt-4o"
