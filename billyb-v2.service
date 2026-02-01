@@ -1,0 +1,15 @@
+[Unit]
+Description=Billy v2 API
+After=network.target
+
+[Service]
+Type=simple
+User=billyb
+WorkingDirectory=/home/billyb/workspaces/billyb-v2
+Environment="PATH=/home/billyb/workspaces/billyb-v2/v2/.venv/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/home/billyb/workspaces/billyb-v2"
+ExecStart=/home/billyb/workspaces/billyb-v2/v2/.venv/bin/python -m uvicorn v2.api:app --host 0.0.0.0 --port 5002
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
