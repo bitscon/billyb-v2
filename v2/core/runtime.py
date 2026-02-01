@@ -7,6 +7,7 @@ provided. It also adds the ask() method required by the API layer to
 correctly invoke the configured LLM.
 """
 
+import json
 import yaml
 from pathlib import Path
 from typing import Dict, Any, List
@@ -79,7 +80,21 @@ class BillyRuntime:
         This is the method called by:
         - /ask
         - /v1/chat/completions
+        
+        Special routing for Agent Zero commands starting with "a0 ".
         """
+        
+        # Route Agent Zero commands
+        if prompt.strip().startswith("a0 "):
+            try:
+                from v2.agent_zero.commands import handle_command
+                result = handle_command(prompt)
+                if result:
+                    return json.dumps(result, indent=2)
+            except ImportError as e:
+                return json.dumps({"error": f"Agent Zero module not available: {str(e)}"}, indent=2)
+            except Exception as e:
+                return json.dumps({"error": f"Error handling Agent Zero command: {str(e)}"}, indent=2)
 
         # Load config if not provided at init
         config = self.config or self._load_config_from_yaml()
