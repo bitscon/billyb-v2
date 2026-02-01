@@ -5,7 +5,7 @@ from typing import List, Optional, Any, Dict
 from fastapi import FastAPI, HTTPException, APIRouter
 from pydantic import BaseModel
 
-from core.runtime import BillyRuntime
+from v2.core.runtime import BillyRuntime
 
 # Optional Agent Zero adapters
 from adapter_impl.agentzero_adapter import (
