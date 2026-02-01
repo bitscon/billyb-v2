@@ -59,9 +59,7 @@ ROOT_PATH = os.getenv(
     "BILLY_V2_ROOT",
     os.path.abspath(os.path.dirname(__file__)),
 )
-
-# FIX: BillyRuntime only accepts `config`
-runtime = BillyRuntime(config=None)
+runtime = BillyRuntime(root_path=ROOT_PATH)
 
 
 # -----------------------------------------------------------------------------

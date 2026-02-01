@@ -1,3 +1,10 @@
+Problem: Missing `BillyRuntime` class definition in `runtime.py`.
+
+Fix: Add the `BillyRuntime` class to the end of the file.
+
+Fixed `runtime.py` content:
+
+```python
 import yaml
 from pathlib import Path
 
@@ -31,3 +38,11 @@ class BillyRuntime:
         return answer
 
     # Add other methods as needed
+```
+
+Commands to update:  
+sudo cp /home/billyb/workspaces/billyb-v2/v2/core/runtime.py /home/billyb/workspaces/billyb-v2/v2/core/runtime.py.backup  
+echo "<paste the fixed code above>" > /home/billyb/workspaces/billyb-v2/v2/core/runtime.py  
+sudo systemctl daemon-reload  
+sudo systemctl restart billyb-v2  
+journalctl -u billyb-v2 --no-pager -n 50
