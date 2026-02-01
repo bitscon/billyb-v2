@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["timestamp", "status", "version_running"],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO timestamp of health check"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["HEALTHY", "DEGRADED", "UNHEALTHY"],
+      "description": "Health status"
+    },
+    "version_running": {
+      "type": "string",
+      "description": "Version detected running"
+    },
+    "details": {
+      "type": "object",
+      "description": "Detailed health information"
+    }
+  }
+}

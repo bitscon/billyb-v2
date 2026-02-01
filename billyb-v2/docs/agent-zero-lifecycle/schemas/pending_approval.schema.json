@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["version", "requested_at", "requested_by", "source", "checksum"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Semantic version of requested Agent Zero upgrade"
+    },
+    "requested_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO timestamp when requested"
+    },
+    "requested_by": {
+      "type": "string",
+      "description": "Entity that requested the upgrade"
+    },
+    "source": {
+      "type": "string",
+      "description": "URL of the repository/release"
+    },
+    "checksum": {
+      "type": "string",
+      "description": "SHA-256 checksum of the release archive"
+    },
+    "notes": {
+      "type": "string",
+      "description": "Optional notes about the upgrade request"
+    }
+  }
+}

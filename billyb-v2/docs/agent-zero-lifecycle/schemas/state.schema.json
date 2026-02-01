@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["state", "last_transition", "authority", "current_operation"],
+  "properties": {
+    "state": {
+      "type": "string",
+      "enum": ["IDLE", "STAGING", "VALIDATING", "PROMOTING", "COMPLETE", "ROLLING_BACK", "FAILED", "FAILED_HARD"],
+      "description": "Current state in the lifecycle state machine"
+    },
+    "last_transition": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO timestamp of last state transition"
+    },
+    "authority": {
+      "type": "string",
+      "enum": ["observer", "executor"],
+      "description": "Current authority level"
+    },
+    "current_operation": {
+      "type": ["object", "null"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["upgrade", "rollback", "confirm"]
+        },
+        "target_version": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["type", "started_at"],
+      "description": "Details about the current operation, if any"
+    }
+  }
+}

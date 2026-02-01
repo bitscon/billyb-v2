@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["version", "installed_at", "installed_by", "source", "checksum"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Semantic version of Agent Zero"
+    },
+    "installed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO timestamp when installed"
+    },
+    "installed_by": {
+      "type": "string",
+      "description": "Entity that performed the installation"
+    },
+    "source": {
+      "type": "string",
+      "description": "URL of the repository/release"
+    },
+    "checksum": {
+      "type": "string",
+      "description": "SHA-256 checksum of the release archive"
+    }
+  }
+}

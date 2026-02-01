@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["version", "confirmed_at", "confirmed_by", "checksum"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Semantic version of known good Agent Zero"
+    },
+    "confirmed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO timestamp when confirmed"
+    },
+    "confirmed_by": {
+      "type": "string",
+      "description": "Entity that confirmed the version"
+    },
+    "checksum": {
+      "type": "string",
+      "description": "SHA-256 checksum of the confirmed version"
+    }
+  }
+}

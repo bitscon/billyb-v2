@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["timestamp", "type", "actor", "details"],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO timestamp when event occurred"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["UPGRADE_REQUESTED", "UPGRADE_APPROVED", "UPGRADE_DENIED", "UPGRADE_STARTED", "UPGRADE_COMPLETED", "UPGRADE_FAILED", "ROLLBACK_STARTED", "ROLLBACK_COMPLETED", "ROLLBACK_FAILED", "VERSION_CONFIRMED", "AUTHORITY_CHANGED"],
+      "description": "Type of lifecycle event"
+    },
+    "actor": {
+      "type": "string",
+      "description": "Entity that triggered the event"
+    },
+    "details": {
+      "type": "object",
+      "description": "Event-specific details"
+    }
+  }
+}
