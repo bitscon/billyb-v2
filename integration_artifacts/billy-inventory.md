@@ -31,12 +31,12 @@ This document provides a concise inventory of the main components, entrypoints a
 
   1. Loads configuration from `config.yaml` (via the `_load_config()` helper).
   2. Loads the canonical charter by scanning `docs/charter/NN_TITLE.md` files.  A failure to load the charter will not stop the server but will leave the runtime without guardrails.
-  3. Sets the initial operational mode to **ADVISORY**.
+  3. Assumes the default operational mode of `/plan` (read-only) unless explicitly invoked otherwise.
 
   The `ask()` method is invoked for every user prompt.  It:
 
-  - Handles mode switching (“switch to operator mode”, “switch to advisory mode”).
-  - Builds a **system prompt** that includes the current mode, a deterministic identity fallback, and the full charter text.
+  - Checks for explicit `/engineer` requests and, if present, enforces artifact production.
+  - Builds a **system prompt** that includes a deterministic identity fallback and the full charter text.
   - Calls `core/llm_api.py:get_completion()` with the assembled messages and configuration.  There is no tool invocation, planning loop or asynchronous streaming – the completion is synchronous and blocking.
   - Post‑processes the answer with `_identity_guard()` to mask any leaked identity phrasing.
 

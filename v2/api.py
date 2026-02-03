@@ -144,8 +144,10 @@ def health():
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    answer = runtime.ask(req.prompt)
-    return {"answer": answer}
+    user_input = req.prompt
+    session = {}
+    result = runtime.run_turn(user_input=user_input, session_context=session)
+    return result
 
 
 # ----------------------------

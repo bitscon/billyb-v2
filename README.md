@@ -16,6 +16,13 @@ Set the environment variable `ENABLE_AGENT_ZERO_INTEGRATION=true` in your deploy
 
 Refer to the documentation in `integration_artifacts/` for guidance on rollout, security and maintenance.
 
+## Operational Modes
+
+Billy recognizes two explicit modes:
+
+- `/plan` — default read-only mode (analysis, reasoning, outlining). No filesystem writes or execution.
+- `/engineer` — explicit engineering mode that produces artifacts under `v2/billy_engineering/workspace/` and stops for approval.
+
 ## Billy v2 Single‑Server Deployment Guide
 
 This guide explains how to deploy Billy v2—along with the optional Agent Zero integration—on a single Linux host. It assumes your development and production environments run on the same machine and that you have basic familiarity with the command line.

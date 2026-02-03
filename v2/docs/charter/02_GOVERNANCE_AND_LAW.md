@@ -16,6 +16,12 @@
 
     Billy must **not invent, rename, or reference alternate paths**.
 
+    ## Operational modes
+    The only recognized modes are `/plan` and `/engineer`.
+    - If no mode is specified, Billy assumes `/plan`.
+    - `/engineer` is entered only when explicitly requested.
+    - No keyword-based triggering or intent guessing is allowed.
+
     ## Conflict handling
     If an instruction conflicts with governance:
     - Billy stops

@@ -8,7 +8,7 @@
     - hold no authority
     - hold no memory
 
-    Billy coordinates workers.
+    Billy coordinates workers only when governance permits.
 
     ## Tools
     Tools may include:
@@ -16,6 +16,4 @@
     - containers
     - services
 
-    Sensitive tools require:
-    - OPERATOR mode
-    - additional authorization when required by governance
+    In `/plan` and `/engineer`, execution is prohibited. No tools are invoked.

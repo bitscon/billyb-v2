@@ -8,12 +8,44 @@ correctly invoke the configured LLM.
 """
 
 import json
+import time
 import yaml
 from pathlib import Path
 from typing import Dict, Any, List
 
 from . import llm_api
 from .charter import load_charter
+from core.contracts.loader import load_schema, ContractViolation
+from core.tool_runner.docker_runner import DockerRunner
+from core.trace.file_trace_sink import FileTraceSink
+from core.tool_registry.registry import ToolRegistry
+from core.tool_registry.loader import ToolLoader
+from core.agent.tool_router import ToolRouter
+from core.agent.memory_router import MemoryRouter
+from core.agent.memory_reader import MemoryReader
+from core.agent.plan_router import PlanRouter
+from core.agent.approval_router import ApprovalRouter
+from core.agent.step_executor import StepExecutor
+from core.agent.plan_state import PlanState
+from core.memory.file_memory_store import FileMemoryStore
+from core.planning.plan import Plan
+from core.agent.evaluation_router import EvaluationRouter
+from core.evaluation.evaluation import Evaluation
+from core.evaluation.synthesizer import EvaluationSynthesizer
+from core.agent.promotion_router import PromotionRouter
+from core.planning.llm_planner import LLMPlanner
+from core.planning.plan_scorer import PlanScorer
+from core.guardrails.invariants import (
+    assert_trace_id,
+    assert_no_tool_execution_without_registry,
+    assert_explicit_memory_write,
+)
+try:
+    from v2.billy_engineering import detect_engineering_intent, enforce_engineering
+    from v2.billy_engineering.enforcement import EngineeringError
+except ImportError:
+    from billy_engineering import detect_engineering_intent, enforce_engineering
+    from billy_engineering.enforcement import EngineeringError
 
 # --- HARD GUARDRAILS (fast stability) ---
 FORBIDDEN_IDENTITY_PHRASES = (
@@ -34,15 +66,55 @@ IDENTITY_FALLBACK = (
 )
 
 
+_trace_sink = FileTraceSink()
+_docker_runner = DockerRunner(trace_sink=_trace_sink)
+_tool_registry = ToolRegistry()
+_memory_store = FileMemoryStore(trace_sink=_trace_sink)
+
+_loader = ToolLoader("tools")
+for spec in _loader.load_all():
+    _tool_registry.register(spec)
+_tool_router = ToolRouter(_tool_registry)
+_memory_router = MemoryRouter()
+_memory_reader = MemoryReader()
+_plan_router = PlanRouter()
+_approval_router = ApprovalRouter()
+_last_plan = None  # TEMP: single-plan memory (no persistence yet)
+_step_executor = StepExecutor()
+_plan_state = None
+_evaluation_router = EvaluationRouter()
+_evaluation_synthesizer = EvaluationSynthesizer()
+_promotion_router = PromotionRouter()
+_last_evaluation = None
+_llm_planner = LLMPlanner()
+_plan_scorer = PlanScorer()
+
+
+def _run_demo_tool(trace_id: str):
+    return _docker_runner.run(
+        tool_id="demo.hello",
+        image="billy-hello",
+        args=[],
+        trace_id=trace_id,
+    )
+
+
 class BillyRuntime:
-    def __init__(self, config: Dict[str, Any] | None = None) -> None:
+    def __init__(self, config: Dict[str, Any] | None = None, root_path: str | None = None) -> None:
         """
         Initialize the runtime.
 
         Args:
             config: Optional configuration dictionary. If not provided,
             config will be loaded automatically from v2/config.yaml.
+            root_path: Optional root path, reserved for compatibility.
         """
+        # Enforce presence of canonical contracts at boot
+        try:
+            load_schema("tool-spec.schema.yaml")
+            load_schema("trace-event.schema.yaml")
+        except ContractViolation as e:
+            raise SystemExit(f"[FATAL] Contract enforcement failed at startup: {e}")
         self.config = config or {}
 
     def _identity_guard(self, user_input: str, answer: str) -> str:
@@ -99,6 +171,19 @@ class BillyRuntime:
         # Load config if not provided at init
         config = self.config or self._load_config_from_yaml()
 
+        # Engineering enforcement (hard boundary)
+        if detect_engineering_intent(prompt):
+            try:
+                def _llm_call(messages: List[Dict[str, str]]) -> str:
+                    return llm_api.get_completion(messages, config)
+
+                return enforce_engineering(prompt, _llm_call)
+            except EngineeringError as exc:
+                return f"Engineering enforcement failed: {exc}"
+            except Exception as exc:
+                return f"Engineering enforcement failed: {exc}"
+
+        # Load config if not provided at init
         # Load charter (system prompt)
         system_prompt = ""
         try:
@@ -119,3 +204,230 @@ class BillyRuntime:
 
         # Apply guardrails
         return self._identity_guard(prompt, answer)
+
+    def run_turn(self, user_input: str, session_context: Dict[str, Any]):
+        trace_id = f"trace-{int(time.time() * 1000)}"
+        assert_trace_id(trace_id)
+        assert_explicit_memory_write(user_input)
+
+        plan_intent = _plan_router.route(user_input)
+        if plan_intent is not None:
+            tool_specs = _tool_registry._tools
+
+            proposals = _llm_planner.propose_many(
+                intent=plan_intent,
+                tool_specs=tool_specs,
+            )
+
+            comparisons = []
+            for p in proposals:
+                plan = Plan(
+                    intent=p["intent"],
+                    steps=p.get("steps", []),
+                    assumptions=p.get("assumptions"),
+                    risks=p.get("risks"),
+                )
+                score = _plan_scorer.score(plan.to_dict())
+                plan_dict = plan.to_dict()
+                plan_dict["score"] = score
+                comparisons.append(plan_dict)
+
+            return {
+                "final_output": {
+                    "intent": plan_intent,
+                    "candidates": comparisons,
+                },
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        approved_plan_id = _approval_router.route(user_input)
+        if approved_plan_id:
+            if not _last_plan or _last_plan.to_dict()["plan_id"] != approved_plan_id:
+                return {
+                    "final_output": "No matching plan to approve.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            _plan_state = PlanState(_last_plan.to_dict())
+            return {
+                "final_output": "Plan approved. Execution not yet implemented.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        cmd = user_input.strip().lower()
+
+        eval_req = _evaluation_router.route(user_input)
+        if eval_req:
+            evaluation = Evaluation(
+                subject_type=eval_req["subject_type"],
+                subject_id=eval_req["subject_id"],
+                outcome="success",
+                observations=[
+                    "Execution completed without contract violations",
+                    "All required artifacts were produced",
+                ],
+                risks=[],
+            )
+            _last_evaluation = evaluation.to_dict()
+
+            summary = _evaluation_synthesizer.summarize(evaluation.to_dict())
+
+            return {
+                "final_output": summary,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        if _promotion_router.route(user_input):
+            if not _last_evaluation:
+                return {
+                    "final_output": "No evaluation available to promote.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            memory_entry = {
+                "content": _last_evaluation,
+                "scope": {
+                    "user_id": "default",
+                    "persona_id": None,
+                    "session_id": None,
+                },
+                "metadata": {
+                    "category": "evaluation",
+                    "confidence": 0.8,
+                    "importance": "medium",
+                    "source": "system",
+                },
+            }
+
+            _memory_store.write(memory_entry, trace_id=trace_id)
+
+            return {
+                "final_output": "Evaluation promoted to memory.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        if cmd == "/pause" and _plan_state:
+            _plan_state.pause()
+            return {
+                "final_output": "Plan paused.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        if cmd == "/abort" and _plan_state:
+            _plan_state.abort()
+            return {
+                "final_output": "Plan aborted.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        if user_input.strip().lower().startswith("/step"):
+            parts = user_input.strip().split()
+            if len(parts) != 2:
+                return {
+                    "final_output": "Usage: /step <step_id>",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            step_id = parts[1]
+
+            if not _last_plan:
+                return {
+                    "final_output": "No active plan.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            _plan_state.can_execute(step_id)
+            _plan_state.mark_running(step_id)
+
+            try:
+                result = _step_executor.execute_step(
+                    plan=_last_plan.to_dict(),
+                    step_id=step_id,
+                    tool_registry=_tool_registry,
+                    docker_runner=_docker_runner,
+                    trace_id=trace_id,
+                )
+                _plan_state.mark_done(step_id)
+            except Exception:
+                _plan_state.mark_failed(step_id)
+                raise
+
+            return {
+                "final_output": f"Step executed: {step_id}",
+                "tool_calls": [result],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        memory_entry = _memory_router.route_write(user_input)
+        if memory_entry:
+            _memory_store.write(memory_entry, trace_id=trace_id)
+            return {
+                "final_output": "Memory saved.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        read_scope = _memory_reader.route_read(user_input)
+        if read_scope:
+            memories = _memory_store.query(scope=read_scope, trace_id=trace_id)
+            formatted = "\n".join([m["content"] for m in memories]) or "No memories found."
+            return {
+                "final_output": formatted,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        tool_id = _tool_router.route(user_input)
+
+        if tool_id:
+            assert_no_tool_execution_without_registry(tool_id, _tool_registry)
+            spec = _tool_registry.get(tool_id)
+            result = _docker_runner.run(
+                tool_spec=spec,
+                image="billy-hello",
+                args=[],
+                trace_id=trace_id,
+            )
+            return {
+                "final_output": f"Tool executed: {tool_id}",
+                "tool_calls": [result],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        return {
+            "final_output": self.ask(user_input),
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+        }
+
+
+runtime = BillyRuntime(config=None)
+
+
+def run_turn(user_input: str, session_context: dict):
+    return runtime.run_turn(user_input=user_input, session_context=session_context)

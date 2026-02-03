@@ -11,12 +11,11 @@ This document maps out the current architecture of **Billy v2**, focusing on the
    
 2. **Runtime initialization**
    
-   - When `BillyRuntime` is constructed (once per process), it loads `config.yaml` to determine which LLM provider to call and loads the canonical charter from `docs/charter/`.  It also sets the `mode` to `ADVISORY` by default.
+   - When `BillyRuntime` is constructed (once per process), it loads `config.yaml` to determine which LLM provider to call and loads the canonical charter from `docs/charter/`.  It assumes `/plan` as the default mode unless the user explicitly invokes `/engineer`.
 
 3. **System prompt assembly**
    
-   - When `ask()` is invoked, the runtime checks whether the input is a mode‑switch command.  If not, it builds a **system prompt** consisting of:
-     - Current operational mode (Advisory or Operator).
+   - When `ask()` is invoked, the runtime checks for explicit `/engineer` requests and enforces artifact production if present.  Otherwise it builds a **system prompt** consisting of:
      - A deterministic identity statement (`"I am Billy — a digital Farm Hand…"`).
      - The full charter text.
 

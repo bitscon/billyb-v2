@@ -1,0 +1,52 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+title: TraceEvent
+type: object
+required:
+  - trace_id
+  - event_id
+  - event_type
+  - timestamp
+  - actor
+  - payload
+
+properties:
+  trace_id:
+    type: string
+
+  event_id:
+    type: string
+
+  event_type:
+    type: string
+
+  timestamp:
+    type: string
+    format: date-time
+
+  actor:
+    type: object
+    required:
+      - component
+    properties:
+      component:
+        type: string
+        enum:
+          - agent_loop
+          - tool_registry
+          - tool_runner
+          - memory_store
+          - system
+      instance_id:
+        type: string
+
+  payload:
+    type: object
+
+  metadata:
+    type: object
+    properties:
+      duration_ms:
+        type: integer
+      outcome:
+        type: string
+        enum: [success, error, denied, timeout]

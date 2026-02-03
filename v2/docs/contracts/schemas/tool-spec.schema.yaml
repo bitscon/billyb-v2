@@ -1,0 +1,88 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+title: ToolSpec
+type: object
+required:
+  - id
+  - name
+  - description
+  - args_schema
+  - permissions
+  - version
+
+properties:
+  id:
+    type: string
+
+  name:
+    type: string
+
+  description:
+    type: string
+
+  args_schema:
+    type: object
+
+  permissions:
+    type: object
+    required:
+      - network
+      - filesystem
+      - secrets
+      - execution
+
+    properties:
+      network:
+        type: object
+        properties:
+          outbound:
+            oneOf:
+              - type: boolean
+              - type: array
+                items:
+                  type: string
+
+      filesystem:
+        type: object
+        properties:
+          read:
+            type: array
+            items:
+              type: string
+          write:
+            type: array
+            items:
+              type: string
+
+      secrets:
+        type: object
+        properties:
+          allowed:
+            type: array
+            items:
+              type: string
+
+      execution:
+        type: object
+        required:
+          - runner
+        properties:
+          runner:
+            type: string
+            enum: [docker, local, remote]
+          max_duration_sec:
+            type: integer
+          max_memory_mb:
+            type: integer
+          max_cpu_cores:
+            type: number
+
+  artifacts:
+    type: object
+    properties:
+      produces:
+        type: array
+        items:
+          type: string
+
+  version:
+    type: string
