@@ -1,0 +1,14 @@
+{
+  "cached_at": "2026-02-01T23:39:09.513777Z",
+  "data": {
+    "tag_name": "v0.9.8",
+    "html_url": "https://github.com/frdel/agent-zero/releases/tag/v0.9.8",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {
+        "name": "agent-zero.zip"
+      }
+    ]
+  }
+}

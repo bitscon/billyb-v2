@@ -1,0 +1,18 @@
+{
+  "current_state": "PROMOTING",
+  "entered_at": "2026-02-02T01:01:32.349205Z",
+  "previous_state": "VALIDATING",
+  "authority_level": "observer",
+  "observed_state": "UNKNOWN",
+  "active_operation": {
+    "type": "upgrade",
+    "target_version": "v0.9.8",
+    "started_at": "2026-02-02T01:01:32.322599Z"
+  },
+  "last_failure": null,
+  "locks": {
+    "upgrade_locked": false,
+    "rollback_locked": false,
+    "lock_reason": null
+  }
+}

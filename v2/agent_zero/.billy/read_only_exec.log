@@ -1,0 +1,1245 @@
+[
+  {
+    "timestamp": "2026-02-01T23:11:25.543189Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/bin/ls"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.545932Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json",
+    "authorized": true,
+    "output_size_bytes": 253,
+    "execution_ms": 2,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.546179Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "-x",
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "InvalidCommandError"
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.546361Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      "-maxdepth",
+      "4"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "SafetyLimitExceededError"
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.549691Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      "-maxdepth",
+      "2",
+      "-type",
+      "f"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 12772,
+    "execution_ms": 3,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.551908Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 380,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.654993Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 380,
+    "execution_ms": 2,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.655330Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "../../../../etc/passwd"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.655749Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 192,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.656071Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 upgrade",
+    "arguments": [
+      "v0.9.8"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "AuthorityError"
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.656310Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "../../../../etc/passwd"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.656549Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/bin/ls"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-01T23:11:25.657044Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      ">",
+      "out.txt"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "WriteAttemptError"
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.830417Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/bin/ls"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.831686Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json",
+    "authorized": true,
+    "output_size_bytes": 253,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.832057Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "-x",
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "InvalidCommandError"
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.832346Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      "-maxdepth",
+      "4"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "SafetyLimitExceededError"
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.835059Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      "-maxdepth",
+      "2",
+      "-type",
+      "f"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 12838,
+    "execution_ms": 2,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.837828Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 398,
+    "execution_ms": 2,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.939445Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 398,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.939869Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "../../../../etc/passwd"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.940472Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 192,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.940903Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 upgrade",
+    "arguments": [
+      "v0.9.8"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "AuthorityError"
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.941367Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "../../../../etc/passwd"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.941689Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/bin/ls"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.942040Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      "-maxdepth",
+      "4"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "SafetyLimitExceededError"
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.942428Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      ">",
+      "out.txt"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "WriteAttemptError"
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.942829Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 192,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:12:08.943231Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      ">",
+      "out.txt"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "WriteAttemptError"
+  },
+  {
+    "timestamp": "2026-02-01T23:12:39.482794Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 192,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:12:47.713877Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "v2/agent_zero/.billy"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy",
+    "authorized": true,
+    "output_size_bytes": 63,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:12:55.657928Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "v2/agent_zero/.billy/version.json"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json",
+    "authorized": true,
+    "output_size_bytes": 253,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:13:04.115516Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "v2/agent_zero",
+      "-maxdepth",
+      "2",
+      "-type",
+      "f"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 7058,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-01T23:52:49.664343Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 279,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T00:17:26.583182Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 392,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T00:20:34.264647Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 392,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T00:20:34.276993Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "v2/agent_zero/.billy"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy",
+    "authorized": true,
+    "output_size_bytes": 79,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T00:20:34.278217Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "v2/agent_zero/.billy/version.json"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json",
+    "authorized": true,
+    "output_size_bytes": 253,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T00:59:19.293764Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "v2/agent_zero/.billy"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy",
+    "authorized": true,
+    "output_size_bytes": 90,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T00:59:19.296064Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "v2/agent_zero/.billy/version.json"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json",
+    "authorized": true,
+    "output_size_bytes": 253,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T00:59:36.618690Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "v2/agent_zero/.billy"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy",
+    "authorized": true,
+    "output_size_bytes": 90,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T00:59:36.621301Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "v2/agent_zero/.billy/version.json"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json",
+    "authorized": true,
+    "output_size_bytes": 253,
+    "execution_ms": 2,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T00:59:57.441580Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "v2/agent_zero/.billy"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy",
+    "authorized": true,
+    "output_size_bytes": 90,
+    "execution_ms": 2,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T00:59:57.443893Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "v2/agent_zero/.billy/version.json"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json",
+    "authorized": true,
+    "output_size_bytes": 253,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:01:11.133016Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "v2/agent_zero/.billy"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy",
+    "authorized": true,
+    "output_size_bytes": 90,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:01:11.134433Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "v2/agent_zero/.billy/version.json"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json",
+    "authorized": true,
+    "output_size_bytes": 253,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:01:32.296771Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "v2/agent_zero/.billy"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy",
+    "authorized": true,
+    "output_size_bytes": 90,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:01:32.299246Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "v2/agent_zero/.billy/version.json"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json",
+    "authorized": true,
+    "output_size_bytes": 253,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.774653Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/bin/ls"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.776210Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json",
+    "authorized": true,
+    "output_size_bytes": 253,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.776829Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "-x",
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "InvalidCommandError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.777377Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      "-maxdepth",
+      "4"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "SafetyLimitExceededError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.780336Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      "-maxdepth",
+      "2",
+      "-type",
+      "f"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 16103,
+    "execution_ms": 2,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.782890Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 832,
+    "execution_ms": 1,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.884771Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 832,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.885439Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "../../../../etc/passwd"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.887782Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 385,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.888480Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 upgrade",
+    "arguments": [
+      "v0.9.8"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "AuthorityError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.889089Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "../../../../etc/passwd"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.889625Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/bin/ls"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.890119Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      "-maxdepth",
+      "4"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "SafetyLimitExceededError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.890677Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      ">",
+      "out.txt"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "WriteAttemptError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.891255Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 385,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:15.891899Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      ">",
+      "out.txt"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "WriteAttemptError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:33.934950Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/bin/ls"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:33.936743Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero/.billy/version.json",
+    "authorized": true,
+    "output_size_bytes": 253,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:33.944943Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "-x",
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "InvalidCommandError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:33.945615Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      "-maxdepth",
+      "4"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "SafetyLimitExceededError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:33.949143Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      "-maxdepth",
+      "2",
+      "-type",
+      "f"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 16103,
+    "execution_ms": 2,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:33.950892Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 832,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:34.052909Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero"
+    ],
+    "resolved_path": "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+    "authorized": true,
+    "output_size_bytes": 832,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:34.053653Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "../../../../etc/passwd"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:34.056261Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 385,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:34.056880Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 upgrade",
+    "arguments": [
+      "v0.9.8"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "AuthorityError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:34.057644Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "../../../../etc/passwd"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:34.058294Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env cat",
+    "arguments": [
+      "/bin/ls"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "PathViolationError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:34.058940Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env find",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      "-maxdepth",
+      "4"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "SafetyLimitExceededError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:34.059655Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      ">",
+      "out.txt"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "WriteAttemptError"
+  },
+  {
+    "timestamp": "2026-02-02T01:02:34.060316Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 385,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  },
+  {
+    "timestamp": "2026-02-02T01:02:34.060997Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 env ls",
+    "arguments": [
+      "/home/billyb/workspaces/billyb-v2/v2/agent_zero",
+      ">",
+      "out.txt"
+    ],
+    "resolved_path": "",
+    "authorized": false,
+    "output_size_bytes": 0,
+    "execution_ms": 0,
+    "violation_triggered": true,
+    "error_type": "WriteAttemptError"
+  },
+  {
+    "timestamp": "2026-02-02T05:33:53.997222Z",
+    "actor": "billy_frame",
+    "authority": "observer",
+    "command": "a0 status",
+    "arguments": [],
+    "resolved_path": "",
+    "authorized": true,
+    "output_size_bytes": 385,
+    "execution_ms": 0,
+    "violation_triggered": false,
+    "error_type": null
+  }
+]
