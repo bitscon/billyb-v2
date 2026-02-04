@@ -35,11 +35,19 @@ from core.evaluation.synthesizer import EvaluationSynthesizer
 from core.agent.promotion_router import PromotionRouter
 from core.planning.llm_planner import LLMPlanner
 from core.planning.plan_scorer import PlanScorer
+from core.planning.plan_validator import PlanValidator
+from core.plans.plan_fingerprint import fingerprint
+from core.plans.plan_diff import diff_plans
+from core.plans.promotion_lock import PromotionLock
+from core.plans.plan_history import PlanHistory
+from core.plans.rollback import RollbackEngine
 from core.guardrails.invariants import (
     assert_trace_id,
     assert_no_tool_execution_without_registry,
     assert_explicit_memory_write,
 )
+from core.validation.plan_validator import PlanValidator
+from core.guardrails.output_guard import OutputGuard
 try:
     from v2.billy_engineering import detect_engineering_intent, enforce_engineering
     from v2.billy_engineering.enforcement import EngineeringError
@@ -88,6 +96,13 @@ _promotion_router = PromotionRouter()
 _last_evaluation = None
 _llm_planner = LLMPlanner()
 _plan_scorer = PlanScorer()
+_plan_validator = PlanValidator()
+_output_guard = OutputGuard()
+_promotion_lock = PromotionLock()
+_previous_plan = None
+_previous_fingerprint = None
+_plan_history = PlanHistory()
+_rollback_engine = RollbackEngine()
 
 
 def _run_demo_tool(trace_id: str):
@@ -210,6 +225,26 @@ class BillyRuntime:
         assert_trace_id(trace_id)
         assert_explicit_memory_write(user_input)
 
+        def _fallback_invalid_plan():
+            return {
+                "plan": {
+                    "id": "fallback-invalid-plan",
+                    "version": "0.0.0",
+                    "objective": "Plan rejected due to validation failure",
+                    "assumptions": [
+                        "LLM output was incomplete or invalid"
+                    ],
+                    "steps": [],
+                    "artifacts": [],
+                    "risks": [
+                        {
+                            "risk": "Unsafe execution",
+                            "mitigation": "Execution blocked"
+                        }
+                    ],
+                }
+            }
+
         plan_intent = _plan_router.route(user_input)
         if plan_intent is not None:
             tool_specs = _tool_registry._tools
@@ -221,15 +256,28 @@ class BillyRuntime:
 
             comparisons = []
             for p in proposals:
+                validation = _plan_validator.validate(p, tool_specs)
+
+                if not validation["valid"]:
+                    comparisons.append({
+                        "intent": p.get("intent"),
+                        "valid": False,
+                        "errors": validation["errors"],
+                    })
+                    continue
+
                 plan = Plan(
                     intent=p["intent"],
                     steps=p.get("steps", []),
                     assumptions=p.get("assumptions"),
                     risks=p.get("risks"),
                 )
+
                 score = _plan_scorer.score(plan.to_dict())
                 plan_dict = plan.to_dict()
                 plan_dict["score"] = score
+                plan_dict["valid"] = True
+
                 comparisons.append(plan_dict)
 
             return {
@@ -244,6 +292,32 @@ class BillyRuntime:
 
         approved_plan_id = _approval_router.route(user_input)
         if approved_plan_id:
+            if not _last_plan:
+                return {
+                    "final_output": _fallback_invalid_plan(),
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            guard = _output_guard.guard(_last_plan.to_dict() if _last_plan else {}, plan_mode=False)
+            if not guard["valid"]:
+                return {
+                    "final_output": _fallback_invalid_plan(),
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            validation = _plan_validator.validate(guard["parsed"] or {})
+            if not validation["valid"]:
+                return {
+                    "final_output": _fallback_invalid_plan(),
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
             if not _last_plan or _last_plan.to_dict()["plan_id"] != approved_plan_id:
                 return {
                     "final_output": "No matching plan to approve.",
@@ -251,6 +325,31 @@ class BillyRuntime:
                     "status": "error",
                     "trace_id": trace_id,
                 }
+
+            current_plan = guard["parsed"] or _last_plan.to_dict()
+            current_fp = fingerprint(current_plan)
+            diff = diff_plans(_previous_plan or {}, current_plan) if _previous_plan else {}
+            lock = _promotion_lock.check(current_fp, _previous_fingerprint, diff)
+            if not lock["allowed"]:
+                return {
+                    "final_output": {
+                        "promotion": {
+                            "status": "blocked",
+                            "reason": "No meaningful diff or promotion not approved",
+                            "current_fingerprint": current_fp,
+                            "previous_fingerprint": _previous_fingerprint,
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            _plan_history.append(current_plan, current_fp)
+            _plan_history.set_active(current_fp)
+
+            _previous_plan = current_plan
+            _previous_fingerprint = current_fp
 
             _plan_state = PlanState(_last_plan.to_dict())
             return {
@@ -261,6 +360,48 @@ class BillyRuntime:
             }
 
         cmd = user_input.strip().lower()
+
+        if cmd.startswith("/rollback"):
+            parts = user_input.strip().split()
+            if len(parts) != 2:
+                return {
+                    "final_output": {
+                        "rollback": {
+                            "status": "blocked",
+                            "reason": "Target plan fingerprint not found or invalid",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            target_fp = parts[1]
+            try:
+                result = _rollback_engine.rollback(target_fp, _plan_history)
+            except Exception:
+                return {
+                    "final_output": {
+                        "rollback": {
+                            "status": "blocked",
+                            "reason": "Target plan fingerprint not found or invalid",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            record = _plan_history.get(target_fp)
+            if record and record.get("plan"):
+                _last_plan = Plan(intent=record["plan"].get("intent", ""), steps=record["plan"].get("steps", []))
+
+            return {
+                "final_output": result,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
 
         eval_req = _evaluation_router.route(user_input)
         if eval_req:
@@ -351,6 +492,42 @@ class BillyRuntime:
             if not _last_plan:
                 return {
                     "final_output": "No active plan.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            active_fp = _plan_history.get_active()
+            if not active_fp:
+                return {
+                    "final_output": "No active plan.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            current_fp = fingerprint(_last_plan.to_dict())
+            if current_fp != active_fp:
+                return {
+                    "final_output": "No active plan.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            guard = _output_guard.guard(_last_plan.to_dict(), plan_mode=False)
+            if not guard["valid"]:
+                return {
+                    "final_output": _fallback_invalid_plan(),
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            validation = _plan_validator.validate(guard["parsed"] or {})
+            if not validation["valid"]:
+                return {
+                    "final_output": _fallback_invalid_plan(),
                     "tool_calls": [],
                     "status": "error",
                     "trace_id": trace_id,
