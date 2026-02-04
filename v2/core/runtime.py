@@ -41,6 +41,11 @@ from core.plans.plan_diff import diff_plans
 from core.plans.promotion_lock import PromotionLock
 from core.plans.plan_history import PlanHistory
 from core.plans.rollback import RollbackEngine
+from core.tools.capability_registry import CapabilityRegistry
+from core.tools.tool_guard import ToolGuard
+from core.execution.execution_journal import ExecutionJournal
+from core.approval.approval_store import ApprovalStore
+from core.approval.approval_flow import ApprovalFlow
 from core.guardrails.invariants import (
     assert_trace_id,
     assert_no_tool_execution_without_registry,
@@ -103,6 +108,30 @@ _previous_plan = None
 _previous_fingerprint = None
 _plan_history = PlanHistory()
 _rollback_engine = RollbackEngine()
+_capability_registry = CapabilityRegistry()
+_tool_guard = ToolGuard()
+_execution_journal = ExecutionJournal()
+_approval_store = ApprovalStore()
+_approval_flow = ApprovalFlow()
+
+_capability_registry.register({
+    "capability": "write_file",
+    "tool": {
+        "name": "demo.hello",
+        "version": "1.0.0",
+        "description": "Writes hello output to workspace",
+        "inputs": [],
+        "outputs": [
+            {"name": "output.txt", "type": "string"},
+        ],
+        "side_effects": ["writes /workspace/output.txt"],
+        "safety": {
+            "reversible": True,
+            "destructive": False,
+            "requires_approval": False,
+        },
+    }
+})
 
 
 def _run_demo_tool(trace_id: str):
@@ -224,6 +253,100 @@ class BillyRuntime:
         trace_id = f"trace-{int(time.time() * 1000)}"
         assert_trace_id(trace_id)
         assert_explicit_memory_write(user_input)
+
+        if user_input.strip().lower().startswith("/approve"):
+            parts = user_input.strip().split()
+            if len(parts) != 3:
+                return {
+                    "final_output": "Usage: /approve <plan_fingerprint> <step_id>",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+            plan_fp = parts[1]
+            step_id = parts[2]
+            record = _plan_history.get(plan_fp)
+            if not record or not record.get("plan"):
+                return {
+                    "final_output": {
+                        "tool_execution": {
+                            "status": "blocked",
+                            "reason": "Execution denied by human",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+            step = next((s for s in record["plan"].get("steps", []) if s.get("step_id") == step_id), None)
+            capability = step.get("capability") if step else ""
+            try:
+                record = _approval_store.approve(plan_fp, step_id, capability)
+            except Exception:
+                return {
+                    "final_output": {
+                        "tool_execution": {
+                            "status": "blocked",
+                            "reason": "Execution denied by human",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+            return {
+                "final_output": record,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        if user_input.strip().lower().startswith("/deny"):
+            parts = user_input.strip().split()
+            if len(parts) != 3:
+                return {
+                    "final_output": "Usage: /deny <plan_fingerprint> <step_id>",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+            plan_fp = parts[1]
+            step_id = parts[2]
+            record = _plan_history.get(plan_fp)
+            if not record or not record.get("plan"):
+                return {
+                    "final_output": {
+                        "tool_execution": {
+                            "status": "blocked",
+                            "reason": "Execution denied by human",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+            step = next((s for s in record["plan"].get("steps", []) if s.get("step_id") == step_id), None)
+            capability = step.get("capability") if step else ""
+            try:
+                record = _approval_store.deny(plan_fp, step_id, capability)
+            except Exception:
+                return {
+                    "final_output": {
+                        "tool_execution": {
+                            "status": "blocked",
+                            "reason": "Execution denied by human",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+            return {
+                "final_output": record,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
 
         def _fallback_invalid_plan():
             return {
@@ -536,6 +659,230 @@ class BillyRuntime:
             _plan_state.can_execute(step_id)
             _plan_state.mark_running(step_id)
 
+            step = next((s for s in _last_plan.to_dict().get("steps", []) if s.get("step_id") == step_id), None)
+            if not step:
+                record = _execution_journal.build_record(
+                    trace_id=trace_id,
+                    plan_fingerprint=current_fp,
+                    step_id=step_id,
+                    capability="",
+                    tool_name="",
+                    tool_version="",
+                    inputs={},
+                    status="blocked",
+                    reason="Capability not registered or contract violation",
+                    outputs=None,
+                )
+                _execution_journal.append(record)
+                return {
+                    "final_output": {
+                        "tool_execution": {
+                            "status": "blocked",
+                            "reason": "Capability not registered or contract violation",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            capability = step.get("capability")
+            if not capability:
+                record = _execution_journal.build_record(
+                    trace_id=trace_id,
+                    plan_fingerprint=current_fp,
+                    step_id=step_id,
+                    capability="",
+                    tool_name="",
+                    tool_version="",
+                    inputs={},
+                    status="blocked",
+                    reason="Capability not registered or contract violation",
+                    outputs=None,
+                )
+                _execution_journal.append(record)
+                return {
+                    "final_output": {
+                        "tool_execution": {
+                            "status": "blocked",
+                            "reason": "Capability not registered or contract violation",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            try:
+                tool_name, tool_version, contract = _capability_registry.resolve(capability)
+            except Exception:
+                record = _execution_journal.build_record(
+                    trace_id=trace_id,
+                    plan_fingerprint=current_fp,
+                    step_id=step_id,
+                    capability=capability,
+                    tool_name="",
+                    tool_version="",
+                    inputs={},
+                    status="blocked",
+                    reason="Capability not registered or contract violation",
+                    outputs=None,
+                )
+                _execution_journal.append(record)
+                return {
+                    "final_output": {
+                        "tool_execution": {
+                            "status": "blocked",
+                            "reason": "Capability not registered or contract violation",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            safety = contract.get("tool", {}).get("safety", {})
+            if safety.get("requires_approval"):
+                state = _approval_store.get_state(current_fp, step_id, capability)
+                if state == "approved":
+                    pass
+                elif state == "denied":
+                    record = _execution_journal.build_record(
+                        trace_id=trace_id,
+                        plan_fingerprint=current_fp,
+                        step_id=step_id,
+                        capability=capability,
+                        tool_name=contract.get("tool", {}).get("name", ""),
+                        tool_version=contract.get("tool", {}).get("version", ""),
+                        inputs=inputs,
+                        status="blocked",
+                        reason="Execution denied by human",
+                        outputs=None,
+                    )
+                    _execution_journal.append(record)
+                    return {
+                        "final_output": {
+                            "tool_execution": {
+                                "status": "blocked",
+                                "reason": "Execution denied by human",
+                            }
+                        },
+                        "tool_calls": [],
+                        "status": "error",
+                        "trace_id": trace_id,
+                    }
+                else:
+                    try:
+                        _approval_store.request(current_fp, step_id, capability)
+                    except Exception:
+                        pass
+
+                    approval_payload = _approval_flow.build_request(
+                        plan_fingerprint=current_fp,
+                        step_id=step_id,
+                        capability=capability,
+                        tool=contract.get("tool", {}),
+                        safety=safety,
+                    )
+
+                    record = _execution_journal.build_record(
+                        trace_id=trace_id,
+                        plan_fingerprint=current_fp,
+                        step_id=step_id,
+                        capability=capability,
+                        tool_name=contract.get("tool", {}).get("name", ""),
+                        tool_version=contract.get("tool", {}).get("version", ""),
+                        inputs=inputs,
+                        status="blocked",
+                        reason="Human approval required",
+                        outputs=None,
+                    )
+                    _execution_journal.append(record)
+
+                    return {
+                        "final_output": {
+                            "tool_execution": {
+                                "status": "blocked",
+                                "reason": "Human approval required",
+                                "approval_state": "pending",
+                            },
+                            **approval_payload,
+                        },
+                        "tool_calls": [],
+                        "status": "error",
+                        "trace_id": trace_id,
+                    }
+
+            spec = _tool_registry.get(tool_name)
+            if spec.get("version") != tool_version:
+                record = _execution_journal.build_record(
+                    trace_id=trace_id,
+                    plan_fingerprint=current_fp,
+                    step_id=step_id,
+                    capability=capability,
+                    tool_name=tool_name,
+                    tool_version=tool_version,
+                    inputs={},
+                    status="blocked",
+                    reason="Capability not registered or contract violation",
+                    outputs=None,
+                )
+                _execution_journal.append(record)
+                return {
+                    "final_output": {
+                        "tool_execution": {
+                            "status": "blocked",
+                            "reason": "Capability not registered or contract violation",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            inputs = step.get("args", {})
+            inputs = inputs if isinstance(inputs, dict) else {}
+            guard = _tool_guard.validate(contract, inputs)
+            if not guard["valid"]:
+                record = _execution_journal.build_record(
+                    trace_id=trace_id,
+                    plan_fingerprint=current_fp,
+                    step_id=step_id,
+                    capability=capability,
+                    tool_name=tool_name,
+                    tool_version=tool_version,
+                    inputs=inputs,
+                    status="blocked",
+                    reason="Capability not registered or contract violation",
+                    outputs=None,
+                )
+                _execution_journal.append(record)
+                return {
+                    "final_output": {
+                        "tool_execution": {
+                            "status": "blocked",
+                            "reason": "Capability not registered or contract violation",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            intent_record = _execution_journal.build_record(
+                trace_id=trace_id,
+                plan_fingerprint=current_fp,
+                step_id=step_id,
+                capability=capability,
+                tool_name=tool_name,
+                tool_version=tool_version,
+                inputs=inputs,
+                status="success",
+                reason="intent logged",
+                outputs=None,
+            )
+            _execution_journal.append(intent_record)
+
             try:
                 result = _step_executor.execute_step(
                     plan=_last_plan.to_dict(),
@@ -545,8 +892,38 @@ class BillyRuntime:
                     trace_id=trace_id,
                 )
                 _plan_state.mark_done(step_id)
-            except Exception:
+                outcome_record = _execution_journal.build_record(
+                    trace_id=trace_id,
+                    plan_fingerprint=current_fp,
+                    step_id=step_id,
+                    capability=capability,
+                    tool_name=tool_name,
+                    tool_version=tool_version,
+                    inputs=inputs,
+                    status="success",
+                    reason="execution complete",
+                    outputs={
+                        "stdout": result.get("stdout"),
+                        "stderr": result.get("stderr"),
+                        "artifact": result.get("artifact"),
+                    },
+                )
+                _execution_journal.append(outcome_record)
+            except Exception as exc:
                 _plan_state.mark_failed(step_id)
+                outcome_record = _execution_journal.build_record(
+                    trace_id=trace_id,
+                    plan_fingerprint=current_fp,
+                    step_id=step_id,
+                    capability=capability,
+                    tool_name=tool_name,
+                    tool_version=tool_version,
+                    inputs=inputs,
+                    status="error",
+                    reason=str(exc),
+                    outputs=None,
+                )
+                _execution_journal.append(outcome_record)
                 raise
 
             return {

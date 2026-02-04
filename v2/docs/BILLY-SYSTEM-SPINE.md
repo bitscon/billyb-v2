@@ -158,51 +158,13 @@ If they can’t do that, they are not allowed to change code.
 
 ---
 
-## 7) Milestones (Where We Are / What’s Next)
-
-Only one milestone is “active” at a time.
-
-### M0 — Spine + Contracts (ACTIVE)
-Goal: lock system boundaries and interfaces so work doesn’t drift.
-
-Exit criteria:
-- `docs/BILLY-SYSTEM-SPINE.md` exists (this file)
-- boundary contracts exist: `docs/contracts/*`
-- a minimal trace schema is defined
-- a minimal tool spec is defined
-
-### M1 — Tool Execution (DockerRunner)
-Goal: run at least one tool through Docker with limits, timeout, trace.
-
-Exit criteria:
-- hello-world tool container runs
-- timeout kill works
-- trace events recorded
-- artifacts saved
-
-### M2 — Tool Registry + Permissions
-Goal: register tools with schemas + permissions, enforce in runner.
-
-Exit criteria:
-- tool schemas validate args
-- permission model blocks forbidden actions
-- tests exist
-
-### M3 — Memory v1
-Goal: simple, explicit memory store with policies and retrieval hooks.
-
-Exit criteria:
-- write policy implemented
-- retrieval improves responses
-- memory namespaces exist
-
-### M4 — Quality + Observability
-Goal: tests, eval set, metrics/logging.
-
-Exit criteria:
-- CI runs core tests
-- basic metrics present
-- threat model doc exists
+## 7) Milestones (Authoritative)
+- [x] M9.2 — Plan Validation & LLM Guardrails
+- [x] M9.3 — Plan Diffing & Promotion Locks
+- [x] M9.4 — Plan History & Rollback Guarantees
+- [x] M10 — Tool Contracts & Capability Registry
+- [x] M11 — Execution Journaling & Forensics
+- [ ] M12 — Human Approval Gates (DEFERRED)
 
 ---
 
