@@ -46,6 +46,7 @@ from core.tools.tool_guard import ToolGuard
 from core.execution.execution_journal import ExecutionJournal
 from core.approval.approval_store import ApprovalStore
 from core.approval.approval_flow import ApprovalFlow
+from core.autonomy.autonomy_registry import AutonomyRegistry
 from core.guardrails.invariants import (
     assert_trace_id,
     assert_no_tool_execution_without_registry,
@@ -113,6 +114,7 @@ _tool_guard = ToolGuard()
 _execution_journal = ExecutionJournal()
 _approval_store = ApprovalStore()
 _approval_flow = ApprovalFlow()
+_autonomy_registry = AutonomyRegistry()
 
 _capability_registry.register({
     "capability": "write_file",
@@ -813,6 +815,41 @@ class BillyRuntime:
                         "trace_id": trace_id,
                     }
 
+            allowed, reason = _autonomy_registry.is_autonomy_allowed(
+                capability,
+                {"step_id": step_id, "plan_fingerprint": current_fp},
+            )
+            if not allowed:
+                record = _execution_journal.build_record(
+                    trace_id=trace_id,
+                    plan_fingerprint=current_fp,
+                    step_id=step_id,
+                    capability=capability,
+                    tool_name=contract.get("tool", {}).get("name", ""),
+                    tool_version=contract.get("tool", {}).get("version", ""),
+                    inputs=inputs,
+                    status="blocked",
+                    reason="Autonomy policy violation or exhausted",
+                    outputs=None,
+                )
+                _execution_journal.append(record)
+                return {
+                    "final_output": {
+                        "tool_execution": {
+                            "status": "blocked",
+                            "reason": "Autonomy policy violation or exhausted",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            _autonomy_registry.consume_autonomy(
+                capability,
+                {"step_id": step_id, "plan_fingerprint": current_fp},
+            )
+
             spec = _tool_registry.get(tool_name)
             if spec.get("version") != tool_version:
                 record = _execution_journal.build_record(
@@ -929,6 +966,57 @@ class BillyRuntime:
             return {
                 "final_output": f"Step executed: {step_id}",
                 "tool_calls": [result],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        if user_input.strip().lower().startswith("/revoke_autonomy"):
+            parts = user_input.strip().split()
+            if len(parts) != 2:
+                return {
+                    "final_output": "Usage: /revoke_autonomy <capability>",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+            capability = parts[1]
+            try:
+                _autonomy_registry.revoke_autonomy(capability)
+            except Exception:
+                return {
+                    "final_output": {
+                        "tool_execution": {
+                            "status": "blocked",
+                            "reason": "Autonomy policy violation or exhausted",
+                        }
+                    },
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            record = _execution_journal.build_record(
+                trace_id=trace_id,
+                plan_fingerprint="",
+                step_id="",
+                capability=capability,
+                tool_name="",
+                tool_version="",
+                inputs={},
+                status="blocked",
+                reason="Autonomy revoked",
+                outputs=None,
+            )
+            _execution_journal.append(record)
+
+            return {
+                "final_output": {
+                    "autonomy": {
+                        "status": "revoked",
+                        "capability": capability,
+                    }
+                },
+                "tool_calls": [],
                 "status": "success",
                 "trace_id": trace_id,
             }

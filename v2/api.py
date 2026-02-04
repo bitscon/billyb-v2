@@ -5,7 +5,7 @@ from typing import List, Optional, Any, Dict
 from fastapi import FastAPI, HTTPException, APIRouter
 from pydantic import BaseModel
 
-from v2.core.runtime import BillyRuntime
+from core.runtime import BillyRuntime
 
 # Optional Agent Zero adapters
 from adapter_impl.agentzero_adapter import (
@@ -60,9 +60,7 @@ ROOT_PATH = os.getenv(
     os.path.abspath(os.path.dirname(__file__)),
 )
 
-# FIX: BillyRuntime only accepts `config`
 runtime = BillyRuntime(config=None)
-
 
 # -----------------------------------------------------------------------------
 # Optional Agent Zero integration
@@ -144,9 +142,10 @@ def health():
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    user_input = req.prompt
-    session = {}
-    result = runtime.run_turn(user_input=user_input, session_context=session)
+    result = runtime.run_turn(
+        user_input=req.prompt,
+        session_context={},
+    )
     return result
 
 
@@ -161,9 +160,6 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: Optional[str] = "billy-v2"
     messages: List[ChatMessage]
-    temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
-    stream: Optional[bool] = False
 
 
 @app.get("/v1/models")
@@ -182,13 +178,10 @@ def v1_models():
 
 @app.post("/v1/chat/completions")
 def v1_chat_completions(req: ChatCompletionRequest):
-    prompt = ""
-    for m in req.messages:
-        if m.role == "user":
-            prompt = m.content
-
-    if not prompt and req.messages:
-        prompt = req.messages[-1].content
+    prompt = next(
+        (m.content for m in reversed(req.messages) if m.role == "user"),
+        "",
+    )
 
     answer = runtime.ask(prompt)
 
@@ -213,44 +206,3 @@ def v1_chat_completions(req: ChatCompletionRequest):
             "total_tokens": 0,
         },
     }
-
-
-# ----------------------------
-# Memory endpoints (Mongo)
-# ----------------------------
-class MemoryPutRequest(BaseModel):
-    key: str
-    value: Any
-    tags: Optional[List[str]] = None
-
-
-@app.post("/v1/memory/put")
-def memory_put(req: MemoryPutRequest):
-    if _mongo_db is None:
-        raise HTTPException(status_code=503, detail="Mongo not configured/connected")
-
-    doc = {
-        "key": req.key,
-        "value": req.value,
-        "tags": req.tags or [],
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    _mongo_db["memory"].update_one(
-        {"key": req.key},
-        {"$set": doc},
-        upsert=True,
-    )
-    return {"ok": True, "key": req.key}
-
-
-@app.get("/v1/memory/get")
-def memory_get(key: str):
-    if _mongo_db is None:
-        raise HTTPException(status_code=503, detail="Mongo not configured/connected")
-
-    doc = _mongo_db["memory"].find_one({"key": key}, {"_id": 0})
-    if not doc:
-        return {"ok": True, "found": False, "key": key, "value": None}
-
-    return {"ok": True, "found": True, **doc}
