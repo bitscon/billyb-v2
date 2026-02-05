@@ -39,6 +39,8 @@ class AutonomyRegistry:
         limits: dict,
         risk_level: str,
         grantor: str,
+        mode: str = "approval",
+        expires_at: float | None = None,
     ) -> dict:
         if not capability:
             raise ContractViolation("Capability name required")
@@ -52,6 +54,8 @@ class AutonomyRegistry:
             "limits": limits,
             "risk_level": risk_level,
             "grantor": grantor,
+            "mode": mode,
+            "expires_at": expires_at,
             "granted_at": datetime.utcnow().isoformat() + "Z",
             "enabled": True,
         }
@@ -67,6 +71,10 @@ class AutonomyRegistry:
             return False, "Capability not granted", {}
         if not grant.get("enabled"):
             return False, "Capability revoked", {}
+        expires_at = grant.get("expires_at")
+        if expires_at and time.time() > expires_at:
+            grant["enabled"] = False
+            return False, "Capability expired", {}
 
         scope = grant.get("scope", {})
         limits = grant.get("limits", {})
@@ -83,7 +91,8 @@ class AutonomyRegistry:
             if any(pattern in normalized for pattern in deny_patterns):
                 return False, "Capability scope violation", {}
         else:
-            return False, "Capability scope violation", {}
+            if allowed_paths or deny_patterns:
+                return False, "Capability scope violation", {}
 
         max_actions = int(limits.get("max_actions_per_session", 0) or 0)
         max_per_minute = int(limits.get("max_actions_per_minute", 0) or 0)

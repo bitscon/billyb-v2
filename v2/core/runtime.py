@@ -137,6 +137,7 @@ _default_capability_grants = {
             "max_actions_per_minute": 3,
         },
         "risk_level": "low",
+        "require_grant": False,
     },
     "filesystem.read": {
         "scope": {
@@ -148,6 +149,28 @@ _default_capability_grants = {
             "max_actions_per_minute": 6,
         },
         "risk_level": "low",
+        "require_grant": False,
+    },
+    "filesystem.delete": {
+        "scope": {
+            "allowed_paths": ["/home/billyb/"],
+            "deny_patterns": [".ssh", ".git"],
+        },
+        "limits": {
+            "max_actions_per_session": 5,
+            "max_actions_per_minute": 2,
+        },
+        "risk_level": "medium",
+        "require_grant": True,
+    },
+    "git.push": {
+        "scope": {},
+        "limits": {
+            "max_actions_per_session": 5,
+            "max_actions_per_minute": 2,
+        },
+        "risk_level": "medium",
+        "require_grant": True,
     },
 }
 
@@ -219,6 +242,8 @@ def _expected_result_for_command(command: str) -> str:
         return "command executed"
     if parts[0] == "touch" and len(parts) >= 2:
         return "empty file created"
+    if parts[0] == "rm" and len(parts) >= 2:
+        return "file removed"
     if parts[0] == "mkdir":
         return "directory created"
     return "command executed"
@@ -236,6 +261,11 @@ def _verify_command_result(command: str) -> str:
         if os.path.exists(target):
             return f"file exists at {target}"
         return f"file missing at {target}"
+    if parts[0] == "rm" and len(parts) >= 2:
+        target = parts[-1]
+        if not os.path.exists(target):
+            return f"file removed at {target}"
+        return f"file still exists at {target}"
     if parts[0] == "mkdir" and len(parts) >= 2:
         target = parts[-1]
         if os.path.isdir(target):
@@ -252,6 +282,70 @@ def _execute_shell_command(command: str, working_dir: str) -> subprocess.Complet
         text=True,
         check=False,
     )
+
+
+def _get_repo_root() -> Path:
+    env_root = os.environ.get("BILLY_REPO_ROOT")
+    if env_root:
+        return Path(env_root)
+    return Path(__file__).resolve().parents[3]
+
+
+def _parse_duration_seconds(value: str) -> int | None:
+    if not value:
+        return None
+    try:
+        if value.endswith("s"):
+            return int(value[:-1])
+        if value.endswith("m"):
+            return int(value[:-1]) * 60
+        if value.endswith("h"):
+            return int(value[:-1]) * 3600
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _git_status_clean(repo_root: Path) -> tuple[bool, list[str]]:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return False, []
+    lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
+    return len(lines) == 0, lines
+
+
+def _git_current_branch(repo_root: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return ""
+    return (result.stdout or "").strip()
+
+
+def _validate_delete_command(parts: list[str]) -> tuple[bool, str]:
+    if not parts or parts[0] != "rm":
+        return False, "Invalid delete command"
+    args = parts[1:]
+    if not args or len(args) != 1:
+        return False, "Delete requires exactly one target"
+    if any(flag in args[0] for flag in ("*", "?", "[")):
+        return False, "Wildcards are not allowed"
+    if any(arg.startswith("-") for arg in args):
+        return False, "Flags are not allowed"
+    return True, ""
 
 
 def _classify_shell_action(command: str, working_dir: str) -> dict | None:
@@ -273,6 +367,21 @@ def _classify_shell_action(command: str, working_dir: str) -> dict | None:
             "capability": "filesystem.write",
             "operation": executable,
             "path": target,
+            "working_dir": working_dir,
+        }
+
+    if executable == "rm":
+        ok, reason = _validate_delete_command(parts)
+        target = args[-1] if args else ""
+        if target and not target.startswith("/"):
+            target = str(Path(working_dir) / target)
+        return {
+            "capability": "filesystem.delete",
+            "operation": executable,
+            "path": target,
+            "valid": ok,
+            "reason": reason if not ok else "",
+            "working_dir": working_dir,
         }
 
     if executable in ("cat", "ls") and args:
@@ -283,6 +392,25 @@ def _classify_shell_action(command: str, working_dir: str) -> dict | None:
             "capability": "filesystem.read",
             "operation": executable,
             "path": target,
+            "working_dir": working_dir,
+        }
+
+    if executable == "git" and args:
+        if args[0] != "push":
+            return None
+        if len(args) != 1:
+            return {
+                "capability": "git.push",
+                "operation": "git push",
+                "valid": False,
+                "reason": "Git push arguments are not allowed",
+                "working_dir": str(_get_repo_root()),
+            }
+        return {
+            "capability": "git.push",
+            "operation": "git push",
+            "valid": True,
+            "working_dir": str(_get_repo_root()),
         }
 
     return None
@@ -433,8 +561,15 @@ class BillyRuntime:
             lines = [line.strip() for line in normalized_input.splitlines() if line.strip()]
             name_line = next((line for line in lines if line.startswith("name:")), "")
             scope_line = next((line for line in lines if line.startswith("scope:")), "")
+            mode_line = next((line for line in lines if line.startswith("mode:")), "")
+            expires_line = next((line for line in lines if line.startswith("expires_in:")), "")
+            max_actions_line = next((line for line in lines if line.startswith("max_actions:")), "")
+
             capability_name = name_line.replace("name:", "", 1).strip()
             scope_name = scope_line.replace("scope:", "", 1).strip()
+            mode = mode_line.replace("mode:", "", 1).strip() or "approval"
+            expires_in = expires_line.replace("expires_in:", "", 1).strip()
+            max_actions = max_actions_line.replace("max_actions:", "", 1).strip()
 
             if not capability_name:
                 return {
@@ -450,6 +585,22 @@ class BillyRuntime:
                     "status": "error",
                     "trace_id": trace_id,
                 }
+            if mode not in ("approval", "auto"):
+                return {
+                    "final_output": "Capability grant rejected: mode must be approval or auto.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+            expires_seconds = _parse_duration_seconds(expires_in) if expires_in else None
+            if expires_in and expires_seconds is None:
+                return {
+                    "final_output": "Capability grant rejected: expires_in must be like 10m, 30s, or 1h.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+            max_actions_value = int(max_actions) if max_actions else None
 
             preset = _default_capability_grants.get(capability_name)
             if not preset:
@@ -460,12 +611,18 @@ class BillyRuntime:
                     "trace_id": trace_id,
                 }
 
+            limits = dict(preset["limits"])
+            if max_actions_value:
+                limits["max_actions_per_session"] = max_actions_value
+
             record = _autonomy_registry.grant_capability(
                 capability=capability_name,
                 scope=preset["scope"],
-                limits=preset["limits"],
+                limits=limits,
                 risk_level=preset["risk_level"],
                 grantor="human",
+                mode=mode,
+                expires_at=(time.time() + expires_seconds) if expires_seconds else None,
             )
             _journal_exec_contract("capability_grant", record)
             return {
@@ -492,6 +649,7 @@ class BillyRuntime:
                 limits=preset["limits"],
                 risk_level=preset["risk_level"],
                 grantor="human",
+                mode="auto" if not preset.get("require_grant") else "approval",
             )
             _journal_exec_contract("capability_grant", record)
             return {
@@ -515,6 +673,7 @@ class BillyRuntime:
 
             command = proposal.get("command", "")
             working_dir = proposal.get("working_dir", "/")
+            capability = proposal.get("capability")
             valid, reason = _validate_exec_command(command)
             if not valid:
                 _journal_exec_contract(
@@ -534,7 +693,7 @@ class BillyRuntime:
             )
             _journal_exec_contract(
                 "execution",
-                {"id": approval_id, "command": command, "working_dir": working_dir},
+                {"id": approval_id, "command": command, "working_dir": working_dir, "capability": capability},
             )
 
             try:
@@ -554,6 +713,9 @@ class BillyRuntime:
             verification = _verify_command_result(command)
             stdout_repr = json.dumps(result.stdout or "")
             stderr_repr = json.dumps(result.stderr or "")
+            limits_remaining = None
+            if capability and _autonomy_registry.get_grant(capability):
+                limits_remaining = _autonomy_registry.consume_grant(capability)
             _journal_exec_contract(
                 "result",
                 {
@@ -562,6 +724,7 @@ class BillyRuntime:
                     "stdout": result.stdout,
                     "stderr": result.stderr,
                     "verification": verification,
+                    "limits_remaining": limits_remaining,
                 },
             )
             _pending_exec_proposals.pop(approval_id, None)
@@ -598,22 +761,74 @@ class BillyRuntime:
             action = _classify_shell_action(command, working_dir)
             if action:
                 capability = action.get("capability", "")
+                action_working_dir = action.get("working_dir", working_dir)
+                grant = _autonomy_registry.get_grant(capability)
+
+                if not action.get("valid", True):
+                    reason = action.get("reason", "Capability scope violation")
+                    _journal_exec_contract(
+                        "capability_denied",
+                        {"capability": capability, "command": command, "reason": reason},
+                    )
+                    return {
+                        "final_output": f"Execution denied: {reason}",
+                        "tool_calls": [],
+                        "status": "error",
+                        "trace_id": trace_id,
+                    }
+
                 allowed, reason, remaining = _autonomy_registry.is_grant_allowed(
                     capability,
                     action,
                 )
-                if allowed:
+
+                preset = _default_capability_grants.get(capability, {})
+                require_grant = preset.get("require_grant", False)
+
+                if not grant and require_grant:
+                    _journal_exec_contract(
+                        "capability_denied",
+                        {"capability": capability, "command": command, "reason": "Capability not granted"},
+                    )
+                    return {
+                        "final_output": "Execution denied: capability not granted.",
+                        "tool_calls": [],
+                        "status": "error",
+                        "trace_id": trace_id,
+                    }
+
+                if capability == "git.push":
+                    repo_root = Path(action_working_dir)
+                    clean, lines = _git_status_clean(repo_root)
+                    if not clean:
+                        _journal_exec_contract(
+                            "capability_denied",
+                            {
+                                "capability": capability,
+                                "command": command,
+                                "reason": "Working tree not clean",
+                                "details": lines,
+                            },
+                        )
+                        return {
+                            "final_output": "Execution denied: working tree not clean.",
+                            "tool_calls": [],
+                            "status": "error",
+                            "trace_id": trace_id,
+                        }
+
+                if allowed and grant and grant.get("mode") == "auto":
                     _journal_exec_contract(
                         "auto_execution",
                         {
                             "capability": capability,
                             "command": command,
-                            "working_dir": working_dir,
+                            "working_dir": action_working_dir,
                             "limits_remaining": remaining,
                         },
                     )
                     try:
-                        result = _execute_shell_command(command, working_dir)
+                        result = _execute_shell_command(command, action_working_dir)
                     except Exception as exc:
                         _journal_exec_contract(
                             "result",
@@ -659,14 +874,71 @@ class BillyRuntime:
                         "trace_id": trace_id,
                     }
 
+                if not allowed and reason in (
+                    "Capability scope violation",
+                    "Capability limits exceeded",
+                    "Capability expired",
+                    "Capability revoked",
+                ):
+                    _journal_exec_contract(
+                        "capability_denied",
+                        {"capability": capability, "command": command, "reason": reason},
+                    )
+                    return {
+                        "final_output": f"Execution denied: {reason}",
+                        "tool_calls": [],
+                        "status": "error",
+                        "trace_id": trace_id,
+                    }
+
+                if capability == "git.push":
+                    repo_root = Path(action_working_dir)
+                    branch = _git_current_branch(repo_root)
+                    proposal_id = _next_exec_contract_id()
+                    proposal = {
+                        "id": proposal_id,
+                        "type": "git.push",
+                        "command": command,
+                        "working_dir": action_working_dir,
+                        "capability": capability,
+                        "risk": "medium",
+                        "expected_result": "git push executed",
+                        "preconditions": [
+                            "clean working tree",
+                            "no untracked files",
+                        ],
+                        "branch": branch,
+                    }
+                    _pending_exec_proposals[proposal_id] = proposal
+                    _journal_exec_contract("proposal", proposal)
+
+                    response = "\n".join(
+                        [
+                            "PROPOSED_ACTION",
+                            f"id: {proposal_id}",
+                            "type: git.push",
+                            "preconditions:",
+                            "  - clean working tree",
+                            "  - no untracked files",
+                            f"branch: {branch}",
+                        ]
+                    )
+                    return {
+                        "final_output": response,
+                        "tool_calls": [],
+                        "status": "success",
+                        "trace_id": trace_id,
+                    }
+
             proposal_id = _next_exec_contract_id()
             expected_result = _expected_result_for_command(command)
             proposal = {
                 "id": proposal_id,
                 "type": "shell",
                 "command": command,
-                "working_dir": working_dir,
-                "risk": "low",
+                "working_dir": action.get("working_dir", working_dir) if action else working_dir,
+                "capability": capability if action else None,
+                "risk": preset.get("risk_level", "low") if action else "low",
                 "expected_result": expected_result,
             }
             _pending_exec_proposals[proposal_id] = proposal
@@ -678,8 +950,8 @@ class BillyRuntime:
                     f"id: {proposal_id}",
                     "type: shell",
                     f"command: {command}",
-                    f"working_dir: {working_dir}",
-                    "risk: low",
+                    f"working_dir: {proposal['working_dir']}",
+                    f"risk: {proposal['risk']}",
                     f"expected_result: {expected_result}",
                 ]
             )
@@ -1418,6 +1690,11 @@ class BillyRuntime:
                 _autonomy_registry.revoke_autonomy(capability)
             except Exception:
                 pass
+
+            _journal_exec_contract(
+                "capability_revoked",
+                {"capability": capability},
+            )
 
             record = _execution_journal.build_record(
                 trace_id=trace_id,
