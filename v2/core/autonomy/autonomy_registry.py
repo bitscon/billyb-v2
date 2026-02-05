@@ -1,4 +1,6 @@
+import os
 import time
+from datetime import datetime
 from core.contracts.loader import ContractViolation
 
 
@@ -11,6 +13,9 @@ class AutonomyRegistry:
         self._policies: dict[str, dict] = {}
         self._history: dict[str, list[float]] = {}
         self._step_history: dict[str, set[str]] = {}
+        self._grants: dict[str, dict] = {}
+        self._grant_history: dict[str, list[float]] = {}
+        self._grant_counts: dict[str, int] = {}
 
     def register(self, policy: dict) -> None:
         if not isinstance(policy, dict):
@@ -22,9 +27,107 @@ class AutonomyRegistry:
         self._policies[capability] = policy
 
     def revoke_autonomy(self, capability: str) -> None:
-        if capability not in self._policies:
-            raise ContractViolation("Autonomy policy not found")
-        self._policies[capability]["autonomy"]["enabled"] = False
+        if capability in self._policies:
+            self._policies[capability]["autonomy"]["enabled"] = False
+        if capability in self._grants:
+            self._grants[capability]["enabled"] = False
+
+    def grant_capability(
+        self,
+        capability: str,
+        scope: dict,
+        limits: dict,
+        risk_level: str,
+        grantor: str,
+    ) -> dict:
+        if not capability:
+            raise ContractViolation("Capability name required")
+        if not isinstance(scope, dict):
+            raise ContractViolation("Capability scope must be an object")
+        if not isinstance(limits, dict):
+            raise ContractViolation("Capability limits must be an object")
+        record = {
+            "capability": capability,
+            "scope": scope,
+            "limits": limits,
+            "risk_level": risk_level,
+            "grantor": grantor,
+            "granted_at": datetime.utcnow().isoformat() + "Z",
+            "enabled": True,
+        }
+        self._grants[capability] = record
+        return record
+
+    def get_grant(self, capability: str) -> dict | None:
+        return self._grants.get(capability)
+
+    def is_grant_allowed(self, capability: str, action: dict) -> tuple[bool, str, dict]:
+        grant = self._grants.get(capability)
+        if not grant:
+            return False, "Capability not granted", {}
+        if not grant.get("enabled"):
+            return False, "Capability revoked", {}
+
+        scope = grant.get("scope", {})
+        limits = grant.get("limits", {})
+        allowed_paths = scope.get("allowed_paths", [])
+        deny_patterns = scope.get("deny_patterns", [])
+        target_path = action.get("path")
+
+        if target_path:
+            normalized = os.path.abspath(target_path)
+            if allowed_paths:
+                allowed = any(normalized.startswith(os.path.abspath(p)) for p in allowed_paths)
+                if not allowed:
+                    return False, "Capability scope violation", {}
+            if any(pattern in normalized for pattern in deny_patterns):
+                return False, "Capability scope violation", {}
+        else:
+            return False, "Capability scope violation", {}
+
+        max_actions = int(limits.get("max_actions_per_session", 0) or 0)
+        max_per_minute = int(limits.get("max_actions_per_minute", 0) or 0)
+        now = time.time()
+        history = self._grant_history.setdefault(capability, [])
+        history[:] = [t for t in history if now - t <= 60]
+        count = self._grant_counts.get(capability, 0)
+
+        if max_actions and count >= max_actions:
+            return False, "Capability limits exceeded", {
+                "remaining_session": 0,
+                "remaining_minute": 0 if max_per_minute else None,
+            }
+        if max_per_minute and len(history) >= max_per_minute:
+            remaining = max_per_minute - len(history)
+            return False, "Capability limits exceeded", {
+                "remaining_session": max(0, max_actions - count) if max_actions else None,
+                "remaining_minute": max(0, remaining),
+            }
+
+        remaining_session = max(0, max_actions - count) if max_actions else None
+        remaining_minute = max(0, max_per_minute - len(history)) if max_per_minute else None
+        return True, "ok", {
+            "remaining_session": remaining_session,
+            "remaining_minute": remaining_minute,
+        }
+
+    def consume_grant(self, capability: str) -> dict:
+        now = time.time()
+        history = self._grant_history.setdefault(capability, [])
+        history.append(now)
+        self._grant_counts[capability] = self._grant_counts.get(capability, 0) + 1
+
+        grant = self._grants.get(capability, {})
+        limits = grant.get("limits", {})
+        max_actions = int(limits.get("max_actions_per_session", 0) or 0)
+        max_per_minute = int(limits.get("max_actions_per_minute", 0) or 0)
+        history[:] = [t for t in history if now - t <= 60]
+        remaining_session = max(0, max_actions - self._grant_counts.get(capability, 0)) if max_actions else None
+        remaining_minute = max(0, max_per_minute - len(history)) if max_per_minute else None
+        return {
+            "remaining_session": remaining_session,
+            "remaining_minute": remaining_minute,
+        }
 
     def is_autonomy_allowed(self, capability: str, context: dict) -> tuple[bool, str]:
         policy = self._policies.get(capability)

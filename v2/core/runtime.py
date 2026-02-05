@@ -8,8 +8,12 @@ correctly invoke the configured LLM.
 """
 
 import json
+import os
+import shlex
+import subprocess
 import time
 import yaml
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -115,6 +119,173 @@ _execution_journal = ExecutionJournal()
 _approval_store = ApprovalStore()
 _approval_flow = ApprovalFlow()
 _autonomy_registry = AutonomyRegistry()
+
+_exec_contract_dir = Path("v2/var/execution_contract")
+_exec_contract_dir.mkdir(parents=True, exist_ok=True)
+_exec_contract_state_path = _exec_contract_dir / "state.json"
+_exec_contract_journal_path = _exec_contract_dir / "journal.jsonl"
+_pending_exec_proposals: Dict[str, Dict[str, str]] = {}
+
+_default_capability_grants = {
+    "filesystem.write": {
+        "scope": {
+            "allowed_paths": ["/home/billyb/"],
+            "deny_patterns": [".ssh", ".git"],
+        },
+        "limits": {
+            "max_actions_per_session": 10,
+            "max_actions_per_minute": 3,
+        },
+        "risk_level": "low",
+    },
+    "filesystem.read": {
+        "scope": {
+            "allowed_paths": ["/home/billyb/"],
+            "deny_patterns": [".ssh", ".git"],
+        },
+        "limits": {
+            "max_actions_per_session": 20,
+            "max_actions_per_minute": 6,
+        },
+        "risk_level": "low",
+    },
+}
+
+
+def _load_exec_contract_state() -> dict:
+    if not _exec_contract_state_path.exists():
+        return {}
+    try:
+        with _exec_contract_state_path.open("r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_exec_contract_state(state: dict) -> None:
+    with _exec_contract_state_path.open("w") as f:
+        json.dump(state, f, indent=2)
+        f.write("\n")
+
+
+def _next_exec_contract_id() -> str:
+    today = datetime.utcnow().strftime("%Y%m%d")
+    state = _load_exec_contract_state()
+    counters = state.get("counters", {})
+    next_num = counters.get(today, 0) + 1
+    counters[today] = next_num
+    state["counters"] = counters
+    _save_exec_contract_state(state)
+    return f"exec-{today}-{next_num:03d}"
+
+
+def _journal_exec_contract(event: str, payload: dict) -> None:
+    record = {
+        "event": event,
+        "payload": payload,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+    with _exec_contract_journal_path.open("a") as f:
+        f.write(json.dumps(record))
+        f.write("\n")
+
+
+def _validate_exec_command(command: str) -> tuple[bool, str]:
+    if not command or command.strip() != command:
+        return False, "Command must be non-empty and fully explicit"
+    if "\n" in command or "\r" in command:
+        return False, "Command must be a single line"
+    if any(token in command for token in ("&&", "||", ";", "|", "&")):
+        return False, "Command chaining is not allowed"
+    if any(token in command for token in ("$", "`", "~")):
+        return False, "Variables are not allowed"
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False, "Command parsing failed"
+    if not parts:
+        return False, "Command must include an executable"
+    if parts[0] in ("sudo", "su"):
+        return False, "Privilege escalation is not allowed"
+    return True, ""
+
+
+def _expected_result_for_command(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return "command executed"
+    if not parts:
+        return "command executed"
+    if parts[0] == "touch" and len(parts) >= 2:
+        return "empty file created"
+    if parts[0] == "mkdir":
+        return "directory created"
+    return "command executed"
+
+
+def _verify_command_result(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return "no verification rule for command"
+    if not parts:
+        return "no verification rule for command"
+    if parts[0] == "touch" and len(parts) >= 2:
+        target = parts[-1]
+        if os.path.exists(target):
+            return f"file exists at {target}"
+        return f"file missing at {target}"
+    if parts[0] == "mkdir" and len(parts) >= 2:
+        target = parts[-1]
+        if os.path.isdir(target):
+            return f"directory exists at {target}"
+        return f"directory missing at {target}"
+    return "no verification rule for command"
+
+
+def _execute_shell_command(command: str, working_dir: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        shlex.split(command),
+        cwd=working_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _classify_shell_action(command: str, working_dir: str) -> dict | None:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+    if not parts:
+        return None
+
+    executable = parts[0]
+    args = parts[1:]
+
+    if executable in ("touch", "mkdir") and args:
+        target = args[-1]
+        if not target.startswith("/"):
+            target = str(Path(working_dir) / target)
+        return {
+            "capability": "filesystem.write",
+            "operation": executable,
+            "path": target,
+        }
+
+    if executable in ("cat", "ls") and args:
+        target = args[-1]
+        if not target.startswith("/"):
+            target = str(Path(working_dir) / target)
+        return {
+            "capability": "filesystem.read",
+            "operation": executable,
+            "path": target,
+        }
+
+    return None
 
 _capability_registry.register({
     "capability": "write_file",
@@ -255,6 +426,269 @@ class BillyRuntime:
         trace_id = f"trace-{int(time.time() * 1000)}"
         assert_trace_id(trace_id)
         assert_explicit_memory_write(user_input)
+
+        normalized_input = user_input.strip()
+
+        if normalized_input.startswith("GRANT_CAPABILITY"):
+            lines = [line.strip() for line in normalized_input.splitlines() if line.strip()]
+            name_line = next((line for line in lines if line.startswith("name:")), "")
+            scope_line = next((line for line in lines if line.startswith("scope:")), "")
+            capability_name = name_line.replace("name:", "", 1).strip()
+            scope_name = scope_line.replace("scope:", "", 1).strip()
+
+            if not capability_name:
+                return {
+                    "final_output": "Capability grant rejected: name is required.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+            if scope_name not in ("", "default"):
+                return {
+                    "final_output": "Capability grant rejected: only scope: default is supported.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            preset = _default_capability_grants.get(capability_name)
+            if not preset:
+                return {
+                    "final_output": "Capability grant rejected: unknown capability.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            record = _autonomy_registry.grant_capability(
+                capability=capability_name,
+                scope=preset["scope"],
+                limits=preset["limits"],
+                risk_level=preset["risk_level"],
+                grantor="human",
+            )
+            _journal_exec_contract("capability_grant", record)
+            return {
+                "final_output": f"Capability granted: {capability_name}",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        if normalized_input.startswith("grant_autonomy "):
+            capability_name = normalized_input[len("grant_autonomy "):].strip()
+            preset = _default_capability_grants.get(capability_name)
+            if not preset:
+                return {
+                    "final_output": "Capability grant rejected: unknown capability.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            record = _autonomy_registry.grant_capability(
+                capability=capability_name,
+                scope=preset["scope"],
+                limits=preset["limits"],
+                risk_level=preset["risk_level"],
+                grantor="human",
+            )
+            _journal_exec_contract("capability_grant", record)
+            return {
+                "final_output": f"Capability granted: {capability_name}",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        approve_parts = normalized_input.split()
+        if len(approve_parts) == 2 and approve_parts[0] == "APPROVE":
+            approval_id = approve_parts[1]
+            proposal = _pending_exec_proposals.get(approval_id)
+            if not proposal:
+                return {
+                    "final_output": "Approval rejected: unknown or expired proposal id.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            command = proposal.get("command", "")
+            working_dir = proposal.get("working_dir", "/")
+            valid, reason = _validate_exec_command(command)
+            if not valid:
+                _journal_exec_contract(
+                    "approval",
+                    {"id": approval_id, "status": "rejected", "reason": reason},
+                )
+                return {
+                    "final_output": f"Approval rejected: {reason}",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            _journal_exec_contract(
+                "approval",
+                {"id": approval_id, "status": "approved"},
+            )
+            _journal_exec_contract(
+                "execution",
+                {"id": approval_id, "command": command, "working_dir": working_dir},
+            )
+
+            try:
+                result = _execute_shell_command(command, working_dir)
+            except Exception as exc:
+                _journal_exec_contract(
+                    "result",
+                    {"id": approval_id, "status": "error", "error": str(exc)},
+                )
+                return {
+                    "final_output": f"Execution failed: {exc}",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            verification = _verify_command_result(command)
+            stdout_repr = json.dumps(result.stdout or "")
+            stderr_repr = json.dumps(result.stderr or "")
+            _journal_exec_contract(
+                "result",
+                {
+                    "id": approval_id,
+                    "exit_code": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "verification": verification,
+                },
+            )
+            _pending_exec_proposals.pop(approval_id, None)
+
+            response = "\n".join(
+                [
+                    "EXECUTION_RESULT",
+                    f"id: {approval_id}",
+                    f"exit_code: {result.returncode}",
+                    f"stdout: {stdout_repr}",
+                    f"stderr: {stderr_repr}",
+                    f"verification: {verification}",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
+        if normalized_input.startswith("/exec "):
+            command = normalized_input[len("/exec "):].strip()
+            valid, reason = _validate_exec_command(command)
+            if not valid:
+                return {
+                    "final_output": f"Execution request rejected: {reason}",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            working_dir = "/"
+            action = _classify_shell_action(command, working_dir)
+            if action:
+                capability = action.get("capability", "")
+                allowed, reason, remaining = _autonomy_registry.is_grant_allowed(
+                    capability,
+                    action,
+                )
+                if allowed:
+                    _journal_exec_contract(
+                        "auto_execution",
+                        {
+                            "capability": capability,
+                            "command": command,
+                            "working_dir": working_dir,
+                            "limits_remaining": remaining,
+                        },
+                    )
+                    try:
+                        result = _execute_shell_command(command, working_dir)
+                    except Exception as exc:
+                        _journal_exec_contract(
+                            "result",
+                            {"status": "error", "error": str(exc)},
+                        )
+                        return {
+                            "final_output": f"Execution failed: {exc}",
+                            "tool_calls": [],
+                            "status": "error",
+                            "trace_id": trace_id,
+                        }
+
+                    remaining = _autonomy_registry.consume_grant(capability)
+                    verification = _verify_command_result(command)
+                    stdout_repr = json.dumps(result.stdout or "")
+                    stderr_repr = json.dumps(result.stderr or "")
+                    _journal_exec_contract(
+                        "result",
+                        {
+                            "capability": capability,
+                            "exit_code": result.returncode,
+                            "stdout": result.stdout,
+                            "stderr": result.stderr,
+                            "verification": verification,
+                            "limits_remaining": remaining,
+                        },
+                    )
+
+                    response = "\n".join(
+                        [
+                            "EXECUTION_RESULT",
+                            "id: auto-exec",
+                            f"exit_code: {result.returncode}",
+                            f"stdout: {stdout_repr}",
+                            f"stderr: {stderr_repr}",
+                            f"verification: {verification}",
+                        ]
+                    )
+                    return {
+                        "final_output": response,
+                        "tool_calls": [],
+                        "status": "success",
+                        "trace_id": trace_id,
+                    }
+
+            proposal_id = _next_exec_contract_id()
+            expected_result = _expected_result_for_command(command)
+            proposal = {
+                "id": proposal_id,
+                "type": "shell",
+                "command": command,
+                "working_dir": working_dir,
+                "risk": "low",
+                "expected_result": expected_result,
+            }
+            _pending_exec_proposals[proposal_id] = proposal
+            _journal_exec_contract("proposal", proposal)
+
+            response = "\n".join(
+                [
+                    "PROPOSED_ACTION",
+                    f"id: {proposal_id}",
+                    "type: shell",
+                    f"command: {command}",
+                    f"working_dir: {working_dir}",
+                    "risk: low",
+                    f"expected_result: {expected_result}",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
 
         if user_input.strip().lower().startswith("/approve"):
             parts = user_input.strip().split()
@@ -983,17 +1417,7 @@ class BillyRuntime:
             try:
                 _autonomy_registry.revoke_autonomy(capability)
             except Exception:
-                return {
-                    "final_output": {
-                        "tool_execution": {
-                            "status": "blocked",
-                            "reason": "Autonomy policy violation or exhausted",
-                        }
-                    },
-                    "tool_calls": [],
-                    "status": "error",
-                    "trace_id": trace_id,
-                }
+                pass
 
             record = _execution_journal.build_record(
                 trace_id=trace_id,
