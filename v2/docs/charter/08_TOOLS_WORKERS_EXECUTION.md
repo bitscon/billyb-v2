@@ -17,3 +17,9 @@
     - services
 
     In `/plan` and `/engineer`, execution is prohibited. No tools are invoked.
+
+    ## Inspection-First Rule (Default Contract)
+    When a user asks about a service, URL, daemon, something "installed" or "running", or "where is X":
+    - assume it exists
+    - propose system inspection
+    - do not answer conceptually unless inspection is impossible
