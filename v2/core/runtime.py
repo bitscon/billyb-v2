@@ -407,24 +407,43 @@ def _build_atomic_ops_plan(verb: str, target: str) -> str | None:
 
     systemd_units = set(_last_inspection.get("systemd_units", []))
     systemd_lines = _last_inspection.get("systemd_lines", {})
+    docker_names = set(_last_inspection.get("docker_names", []))
+    docker_lines = _last_inspection.get("docker_lines", {})
 
     normalized = _normalize_service_name(target)
-    if normalized not in systemd_units and target not in systemd_units:
+    unit_name = normalized if normalized in systemd_units else target
+    use_systemd = unit_name in systemd_units
+    use_docker = False
+    if not use_systemd:
+        use_docker = target in docker_names
+
+    if verb in ("enable", "disable") and not use_systemd:
         return None
 
-    unit_name = normalized if normalized in systemd_units else target
-    observed_line = systemd_lines.get(unit_name, f"{unit_name} (observed in systemd)")
+    if not use_systemd and not use_docker:
+        return None
+
     timestamp = _last_inspection.get("timestamp", "unknown")
 
-    action_command = f"sudo systemctl {verb} {unit_name}"
-    verify_command = f"systemctl status {unit_name}"
+    if use_systemd:
+        observed_line = systemd_lines.get(unit_name, f"{unit_name} (observed in systemd)")
+        action_command = f"sudo systemctl {verb} {unit_name}"
+        verify_command = f"systemctl status {unit_name}"
+        observed_label = "systemd"
+    else:
+        observed_line = docker_lines.get(target, f"{target} (observed in docker)")
+        action_command = f"sudo docker {verb} {target}"
+        verify_command = (
+            f"sudo docker ps --filter name=^/{target}$ --format \"{{{{.Names}}}}\t{{{{.Status}}}}\""
+        )
+        observed_label = "docker"
 
     return "\n".join(
         [
             "Atomic action plan:",
             "",
             "Observed:",
-            f"- systemd: {observed_line}",
+            f"- {observed_label}: {observed_line}",
             f"- inspection time: {timestamp}",
             "",
             "Action:",
@@ -483,15 +502,17 @@ def _parse_systemd_units(output: str) -> tuple[set[str], dict[str, str]]:
     return units, unit_lines
 
 
-def _parse_docker_names(output: str) -> set[str]:
+def _parse_docker_lines(output: str) -> tuple[set[str], dict[str, str]]:
     names = set()
+    lines = {}
     for line in output.splitlines():
         if not line.strip():
             continue
         name = line.split("\t", 1)[0].strip()
         if name:
             names.add(name)
-    return names
+            lines[name] = line.strip()
+    return names, lines
 
 
 def _record_inspection(data: dict) -> None:
@@ -532,7 +553,7 @@ def _inspect_barn(query: str) -> str:
     )
 
     systemd_units, systemd_lines = _parse_systemd_units(systemd_out if systemd_ok else "")
-    docker_names = _parse_docker_names(docker_out if docker_ok else "")
+    docker_names, docker_lines = _parse_docker_lines(docker_out if docker_ok else "")
 
     _record_inspection(
         {
@@ -540,6 +561,7 @@ def _inspect_barn(query: str) -> str:
             "systemd_units": sorted(systemd_units),
             "systemd_lines": systemd_lines,
             "docker_names": sorted(docker_names),
+            "docker_lines": docker_lines,
             "ports_output": ports_out if ports_ok else "",
             "config_hits": rg_out if rg_ok else "",
             "search_term": search_term,

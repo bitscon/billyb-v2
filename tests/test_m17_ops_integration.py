@@ -1,13 +1,16 @@
 import v2.core.runtime as runtime_mod
 
 
-def _seed_inspection(units: list[str]) -> None:
+def _seed_inspection(units: list[str], docker: list[str] | None = None) -> None:
     runtime_mod._last_inspection.clear()
+    docker = docker or []
     runtime_mod._last_inspection.update(
         {
             "timestamp": "2026-02-04T00:00:00Z",
             "systemd_units": units,
             "systemd_lines": {unit: f"{unit} loaded active running" for unit in units},
+            "docker_names": docker,
+            "docker_lines": {name: f"{name}\t0.0.0.0:80->80/tcp" for name in docker},
         }
     )
 
@@ -36,3 +39,11 @@ def test_ops_rejects_non_atomic():
     _seed_inspection(["nginx.service"])
     response = runtime_mod.run_turn("/ops restart nginx now", {})
     assert "Atomic action required" in response["final_output"]
+
+
+def test_ops_accepts_docker_target():
+    _seed_inspection([], docker=["cmdb"])
+    response = runtime_mod.run_turn("/ops restart cmdb", {})
+    assert "Atomic action plan:" in response["final_output"]
+    assert "docker: cmdb" in response["final_output"]
+    assert "Command: sudo docker restart cmdb" in response["final_output"]
