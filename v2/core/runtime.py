@@ -373,6 +373,27 @@ def _requires_barn_inspection(text: str) -> bool:
     return any(trigger in lowered for trigger in triggers)
 
 
+def _is_action_request(text: str) -> bool:
+    lowered = text.lower()
+    action_triggers = [
+        "restart",
+        "stop",
+        "reload",
+        "start",
+        "install",
+        "upgrade",
+        "update",
+        "remove",
+        "delete",
+        "uninstall",
+        "push",
+        "deploy",
+        "enable",
+        "disable",
+    ]
+    return any(trigger in lowered for trigger in action_triggers)
+
+
 def _run_inspection_command(command: list[str], timeout: int = 3) -> tuple[bool, str]:
     try:
         result = subprocess.run(
@@ -781,8 +802,12 @@ class BillyRuntime:
         normalized_input = user_input.strip()
 
         if _requires_barn_inspection(normalized_input):
+            inspection = _inspect_barn(normalized_input)
+            if _is_action_request(normalized_input):
+                next_step = "\n\nNEXT STEP:\n- If you want me to act, reply with: /ops " + normalized_input
+                inspection = inspection + next_step
             return {
-                "final_output": _inspect_barn(normalized_input),
+                "final_output": inspection,
                 "tool_calls": [],
                 "status": "success",
                 "trace_id": trace_id,

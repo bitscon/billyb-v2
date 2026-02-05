@@ -15,3 +15,10 @@ def test_barn_inspection_required(monkeypatch):
     assert "docker" in output
     assert "ports" in output
     assert "config" in output
+
+
+def test_barn_inspection_action_requires_ops():
+    response = runtime_mod.run_turn("restart nginx", {})
+    output = (response.get("final_output") or "").lower()
+    assert "inspecting the barn" in output
+    assert "/ops restart nginx" in output
