@@ -7,9 +7,11 @@ provided. It also adds the ask() method required by the API layer to
 correctly invoke the configured LLM.
 """
 
+import hashlib
 import json
 import os
 import shlex
+import socket
 import subprocess
 import time
 import yaml
@@ -126,6 +128,12 @@ _exec_contract_state_path = _exec_contract_dir / "state.json"
 _exec_contract_journal_path = _exec_contract_dir / "journal.jsonl"
 _pending_exec_proposals: Dict[str, Dict[str, str]] = {}
 
+_ops_contract_dir = Path("v2/var/ops")
+_ops_contract_dir.mkdir(parents=True, exist_ok=True)
+_ops_state_path = _ops_contract_dir / "state.json"
+_ops_journal_path = _ops_contract_dir / "journal.jsonl"
+_pending_ops_plans: Dict[str, Dict[str, str]] = {}
+
 _default_capability_grants = {
     "filesystem.write": {
         "scope": {
@@ -202,6 +210,33 @@ def _next_exec_contract_id() -> str:
     return f"exec-{today}-{next_num:03d}"
 
 
+def _load_ops_state() -> dict:
+    if not _ops_state_path.exists():
+        return {}
+    try:
+        with _ops_state_path.open("r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_ops_state(state: dict) -> None:
+    with _ops_state_path.open("w") as f:
+        json.dump(state, f, indent=2)
+        f.write("\n")
+
+
+def _next_ops_id() -> str:
+    today = datetime.utcnow().strftime("%Y%m%d")
+    state = _load_ops_state()
+    counters = state.get("counters", {})
+    next_num = counters.get(today, 0) + 1
+    counters[today] = next_num
+    state["counters"] = counters
+    _save_ops_state(state)
+    return f"ops-{today}-{next_num:03d}"
+
+
 def _journal_exec_contract(event: str, payload: dict) -> None:
     record = {
         "event": event,
@@ -209,6 +244,17 @@ def _journal_exec_contract(event: str, payload: dict) -> None:
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
     with _exec_contract_journal_path.open("a") as f:
+        f.write(json.dumps(record))
+        f.write("\n")
+
+
+def _journal_ops(event: str, payload: dict) -> None:
+    record = {
+        "event": event,
+        "payload": payload,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+    with _ops_journal_path.open("a") as f:
         f.write(json.dumps(record))
         f.write("\n")
 
@@ -304,6 +350,77 @@ def _parse_duration_seconds(value: str) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _is_high_risk_command(command: str) -> tuple[bool, str]:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False, ""
+    if not parts:
+        return False, ""
+    executable = parts[0]
+    args = parts[1:]
+
+    if executable in ("apt", "apt-get", "dnf", "pacman", "apk"):
+        return True, "system_package"
+    if executable == "systemctl" and args:
+        if args[0] in ("restart", "stop", "reload"):
+            return True, "service_control"
+    if executable == "docker" and args:
+        if args[0] in ("restart", "stop", "kill", "rm"):
+            return True, "service_control"
+    if executable in ("iptables", "ufw", "firewall-cmd", "ip", "route", "ifconfig", "nmcli"):
+        return True, "network_change"
+    if executable == "rm" and args:
+        target = args[-1]
+        if not target.startswith("/"):
+            target = str(Path("/") / target)
+        if not os.path.abspath(target).startswith(os.path.abspath("/home/billyb/")):
+            return True, "data_destructive"
+    return False, ""
+
+
+def _build_ops_plan(command: str, category: str) -> dict:
+    host = socket.gethostname()
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = []
+
+    target = {}
+    if parts:
+        if parts[0] == "systemctl" and len(parts) >= 2:
+            if len(parts) >= 3:
+                target = {"service": parts[2], "host": host}
+            else:
+                target = {"service": "unknown", "host": host}
+        elif parts[0] in ("apt", "apt-get", "dnf", "pacman", "apk"):
+            target = {"package": " ".join(parts[1:]) or "unknown", "host": host}
+        elif parts[0] == "docker" and len(parts) >= 2:
+            target = {"service": parts[1], "host": host}
+        else:
+            target = {"host": host}
+    else:
+        target = {"host": host}
+
+    pre_checks = [
+        "operator intent confirmed",
+        "no pending approvals",
+    ]
+    impact = ["potential service disruption", "manual verification required"]
+    rollback = ["manual rollback required"]
+    verification = ["manual verification required"]
+
+    return {
+        "category": category,
+        "risk_level": "HIGH",
+        "target": target,
+        "pre_checks": pre_checks,
+        "impact": impact,
+        "rollback": rollback,
+        "verification": verification,
+    }
 
 
 def _git_status_clean(repo_root: Path) -> tuple[bool, list[str]]:
@@ -557,6 +674,95 @@ class BillyRuntime:
 
         normalized_input = user_input.strip()
 
+        if normalized_input.startswith("/ops "):
+            command = normalized_input[len("/ops "):].strip()
+            valid, reason = _validate_exec_command(command)
+            if not valid:
+                return {
+                    "final_output": f"Ops request rejected: {reason}",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            is_high_risk, category = _is_high_risk_command(command)
+            if not is_high_risk:
+                return {
+                    "final_output": "Ops request rejected: command is not classified as high-risk.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            plan_id = _next_ops_id()
+            plan = _build_ops_plan(command, category)
+            command_hash = hashlib.sha256(command.encode("utf-8")).hexdigest()
+            operator = session_context.get("user_id") if isinstance(session_context, dict) else None
+            host = socket.gethostname()
+
+            ops_plan = {
+                "id": plan_id,
+                "command": command,
+                "command_hash": command_hash,
+                "category": plan["category"],
+                "risk_level": plan["risk_level"],
+                "target": plan["target"],
+                "pre_checks": plan["pre_checks"],
+                "impact": plan["impact"],
+                "rollback": plan["rollback"],
+                "verification": plan["verification"],
+                "operator": operator or "human",
+                "host": host,
+            }
+            _pending_ops_plans[plan_id] = ops_plan
+            _journal_ops(
+                "intent",
+                {"id": plan_id, "operator": ops_plan["operator"], "command": command, "host": host},
+            )
+            _journal_ops("plan", ops_plan)
+
+            target_lines = []
+            for key, value in ops_plan["target"].items():
+                target_lines.append(f"  {key}: {value}")
+            pre_check_lines = [f"  - {item}" for item in ops_plan["pre_checks"]]
+            impact_lines = [f"  - {item}" for item in ops_plan["impact"]]
+            rollback_lines = [f"  - {item}" for item in ops_plan["rollback"]]
+            verification_lines = [f"  - {item}" for item in ops_plan["verification"]]
+
+            response = "\n".join(
+                [
+                    "OPS_PLAN",
+                    f"id: {plan_id}",
+                    f"category: {ops_plan['category']}",
+                    "risk_level: HIGH",
+                    "",
+                    "target:",
+                    *target_lines,
+                    "",
+                    "pre_checks:",
+                    *pre_check_lines,
+                    "",
+                    "impact:",
+                    *impact_lines,
+                    "",
+                    "rollback:",
+                    *rollback_lines,
+                    "",
+                    "verification:",
+                    *verification_lines,
+                    "",
+                    "execute_command:",
+                    f"  {command}",
+                ]
+            )
+
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
         if normalized_input.startswith("GRANT_CAPABILITY"):
             lines = [line.strip() for line in normalized_input.splitlines() if line.strip()]
             name_line = next((line for line in lines if line.startswith("name:")), "")
@@ -662,6 +868,103 @@ class BillyRuntime:
         approve_parts = normalized_input.split()
         if len(approve_parts) == 2 and approve_parts[0] == "APPROVE":
             approval_id = approve_parts[1]
+            if approval_id in _pending_ops_plans:
+                ops_plan = _pending_ops_plans.get(approval_id)
+                command = ops_plan.get("command", "")
+                command_hash = ops_plan.get("command_hash", "")
+                operator = ops_plan.get("operator", "human")
+                host = ops_plan.get("host", socket.gethostname())
+                recomputed_hash = hashlib.sha256(command.encode("utf-8")).hexdigest()
+
+                if recomputed_hash != command_hash:
+                    _journal_ops(
+                        "approval",
+                        {
+                            "id": approval_id,
+                            "status": "rejected",
+                            "reason": "Command hash mismatch",
+                            "host": host,
+                        },
+                    )
+                    return {
+                        "final_output": "Ops approval rejected: command hash mismatch.",
+                        "tool_calls": [],
+                        "status": "error",
+                        "trace_id": trace_id,
+                    }
+
+                _journal_ops(
+                    "approval",
+                    {"id": approval_id, "status": "approved", "operator": operator, "host": host},
+                )
+                _journal_ops(
+                    "execution",
+                    {"id": approval_id, "command": command, "operator": operator, "host": host},
+                )
+
+                try:
+                    result = _execute_shell_command(command, "/")
+                except Exception as exc:
+                    _journal_ops(
+                        "result",
+                        {"id": approval_id, "status": "error", "error": str(exc), "host": host},
+                    )
+                    return {
+                        "final_output": f"Ops execution failed: {exc}",
+                        "tool_calls": [],
+                        "status": "error",
+                        "trace_id": trace_id,
+                    }
+
+                stdout_repr = json.dumps(result.stdout or "")
+                stderr_repr = json.dumps(result.stderr or "")
+                status = "SUCCESS" if result.returncode == 0 else "FAILED"
+                verification = ["manual verification required"]
+                _journal_ops(
+                    "result",
+                    {
+                        "id": approval_id,
+                        "exit_code": result.returncode,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "verification": verification,
+                        "status": status,
+                        "host": host,
+                    },
+                )
+                _pending_ops_plans.pop(approval_id, None)
+
+                response = "\n".join(
+                    [
+                        "OPS_RESULT",
+                        f"id: {approval_id}",
+                        f"exit_code: {result.returncode}",
+                        "",
+                        f"stdout: {stdout_repr}",
+                        f"stderr: {stderr_repr}",
+                        "",
+                        "verification:",
+                        "  - manual verification required",
+                        "",
+                        f"status: {status}",
+                    ]
+                )
+
+                if status != "SUCCESS":
+                    response = "\n".join(
+                        [
+                            response,
+                            "recommendation: manual rollback",
+                        ]
+                    )
+
+                return {
+                    "final_output": response,
+                    "tool_calls": [],
+                    "status": "success" if status == "SUCCESS" else "error",
+                    "trace_id": trace_id,
+                }
+
             proposal = _pending_exec_proposals.get(approval_id)
             if not proposal:
                 return {
@@ -752,6 +1055,15 @@ class BillyRuntime:
             if not valid:
                 return {
                     "final_output": f"Execution request rejected: {reason}",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            is_high_risk, _ = _is_high_risk_command(command)
+            if is_high_risk:
+                return {
+                    "final_output": "Execution denied: high-risk operation requires /ops.",
                     "tool_calls": [],
                     "status": "error",
                     "trace_id": trace_id,
