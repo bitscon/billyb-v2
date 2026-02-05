@@ -133,6 +133,7 @@ _ops_contract_dir.mkdir(parents=True, exist_ok=True)
 _ops_state_path = _ops_contract_dir / "state.json"
 _ops_journal_path = _ops_contract_dir / "journal.jsonl"
 _pending_ops_plans: Dict[str, Dict[str, str]] = {}
+_last_inspection: dict = {}
 
 _default_capability_grants = {
     "filesystem.write": {
@@ -394,6 +395,50 @@ def _is_action_request(text: str) -> bool:
     return any(trigger in lowered for trigger in action_triggers)
 
 
+def _normalize_service_name(name: str) -> str:
+    if name.endswith(".service"):
+        return name
+    return f"{name}.service"
+
+
+def _build_atomic_ops_plan(verb: str, target: str) -> str | None:
+    if not _last_inspection:
+        return None
+
+    systemd_units = set(_last_inspection.get("systemd_units", []))
+    systemd_lines = _last_inspection.get("systemd_lines", {})
+
+    normalized = _normalize_service_name(target)
+    if normalized not in systemd_units and target not in systemd_units:
+        return None
+
+    unit_name = normalized if normalized in systemd_units else target
+    observed_line = systemd_lines.get(unit_name, f"{unit_name} (observed in systemd)")
+    timestamp = _last_inspection.get("timestamp", "unknown")
+
+    action_command = f"sudo systemctl {verb} {unit_name}"
+    verify_command = f"systemctl status {unit_name}"
+
+    return "\n".join(
+        [
+            "Atomic action plan:",
+            "",
+            "Observed:",
+            f"- systemd: {observed_line}",
+            f"- inspection time: {timestamp}",
+            "",
+            "Action:",
+            f"- Command: {action_command}",
+            "",
+            "Verification:",
+            f"- Command: {verify_command}",
+            "",
+            "This action requires sudo.",
+            "Approve? (yes/no)",
+        ]
+    )
+
+
 def _run_inspection_command(command: list[str], timeout: int = 3) -> tuple[bool, str]:
     try:
         result = subprocess.run(
@@ -420,6 +465,38 @@ def _summarize_output(output: str, max_lines: int = 20) -> str:
     if len(lines) <= max_lines:
         return "\n".join(lines)
     return "\n".join(lines[:max_lines] + ["... (truncated)"])
+
+
+def _parse_systemd_units(output: str) -> tuple[set[str], dict[str, str]]:
+    units = set()
+    unit_lines = {}
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        unit = parts[0]
+        if "." in unit:
+            units.add(unit)
+            unit_lines[unit] = line.strip()
+    return units, unit_lines
+
+
+def _parse_docker_names(output: str) -> set[str]:
+    names = set()
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        name = line.split("\t", 1)[0].strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def _record_inspection(data: dict) -> None:
+    _last_inspection.clear()
+    _last_inspection.update(data)
 
 
 def _inspect_barn(query: str) -> str:
@@ -452,6 +529,21 @@ def _inspect_barn(query: str) -> str:
             "*.service",
         ],
         timeout=5,
+    )
+
+    systemd_units, systemd_lines = _parse_systemd_units(systemd_out if systemd_ok else "")
+    docker_names = _parse_docker_names(docker_out if docker_ok else "")
+
+    _record_inspection(
+        {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "systemd_units": sorted(systemd_units),
+            "systemd_lines": systemd_lines,
+            "docker_names": sorted(docker_names),
+            "ports_output": ports_out if ports_ok else "",
+            "config_hits": rg_out if rg_ok else "",
+            "search_term": search_term,
+        }
     )
 
     response_lines = [
@@ -801,6 +893,43 @@ class BillyRuntime:
 
         normalized_input = user_input.strip()
 
+        if normalized_input.startswith("/ops "):
+            rest = normalized_input[len("/ops "):].strip()
+            parts = shlex.split(rest)
+            if len(parts) != 2:
+                return {
+                    "final_output": "Atomic action required: use /ops <verb> <target>.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            verb, target = parts
+            allowed_verbs = {"restart", "start", "stop", "enable", "disable"}
+            if verb not in allowed_verbs:
+                return {
+                    "final_output": "Atomic action required: unsupported verb.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            plan = _build_atomic_ops_plan(verb, target)
+            if not plan:
+                return {
+                    "final_output": "Cannot proceed: target was not observed during inspection.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            return {
+                "final_output": plan,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+
         if _requires_barn_inspection(normalized_input):
             inspection = _inspect_barn(normalized_input)
             if _is_action_request(normalized_input):
@@ -808,95 +937,6 @@ class BillyRuntime:
                 inspection = inspection + next_step
             return {
                 "final_output": inspection,
-                "tool_calls": [],
-                "status": "success",
-                "trace_id": trace_id,
-            }
-
-        if normalized_input.startswith("/ops "):
-            command = normalized_input[len("/ops "):].strip()
-            valid, reason = _validate_exec_command(command)
-            if not valid:
-                return {
-                    "final_output": f"Ops request rejected: {reason}",
-                    "tool_calls": [],
-                    "status": "error",
-                    "trace_id": trace_id,
-                }
-
-            is_high_risk, category = _is_high_risk_command(command)
-            if not is_high_risk:
-                return {
-                    "final_output": "Ops request rejected: command is not classified as high-risk.",
-                    "tool_calls": [],
-                    "status": "error",
-                    "trace_id": trace_id,
-                }
-
-            plan_id = _next_ops_id()
-            plan = _build_ops_plan(command, category)
-            command_hash = hashlib.sha256(command.encode("utf-8")).hexdigest()
-            operator = session_context.get("user_id") if isinstance(session_context, dict) else None
-            host = socket.gethostname()
-
-            ops_plan = {
-                "id": plan_id,
-                "command": command,
-                "command_hash": command_hash,
-                "category": plan["category"],
-                "risk_level": plan["risk_level"],
-                "target": plan["target"],
-                "pre_checks": plan["pre_checks"],
-                "impact": plan["impact"],
-                "rollback": plan["rollback"],
-                "verification": plan["verification"],
-                "operator": operator or "human",
-                "host": host,
-            }
-            _pending_ops_plans[plan_id] = ops_plan
-            _journal_ops(
-                "intent",
-                {"id": plan_id, "operator": ops_plan["operator"], "command": command, "host": host},
-            )
-            _journal_ops("plan", ops_plan)
-
-            target_lines = []
-            for key, value in ops_plan["target"].items():
-                target_lines.append(f"  {key}: {value}")
-            pre_check_lines = [f"  - {item}" for item in ops_plan["pre_checks"]]
-            impact_lines = [f"  - {item}" for item in ops_plan["impact"]]
-            rollback_lines = [f"  - {item}" for item in ops_plan["rollback"]]
-            verification_lines = [f"  - {item}" for item in ops_plan["verification"]]
-
-            response = "\n".join(
-                [
-                    "OPS_PLAN",
-                    f"id: {plan_id}",
-                    f"category: {ops_plan['category']}",
-                    "risk_level: HIGH",
-                    "",
-                    "target:",
-                    *target_lines,
-                    "",
-                    "pre_checks:",
-                    *pre_check_lines,
-                    "",
-                    "impact:",
-                    *impact_lines,
-                    "",
-                    "rollback:",
-                    *rollback_lines,
-                    "",
-                    "verification:",
-                    *verification_lines,
-                    "",
-                    "execute_command:",
-                    f"  {command}",
-                ]
-            )
-
-            return {
-                "final_output": response,
                 "tool_calls": [],
                 "status": "success",
                 "trace_id": trace_id,
@@ -1007,103 +1047,6 @@ class BillyRuntime:
         approve_parts = normalized_input.split()
         if len(approve_parts) == 2 and approve_parts[0] == "APPROVE":
             approval_id = approve_parts[1]
-            if approval_id in _pending_ops_plans:
-                ops_plan = _pending_ops_plans.get(approval_id)
-                command = ops_plan.get("command", "")
-                command_hash = ops_plan.get("command_hash", "")
-                operator = ops_plan.get("operator", "human")
-                host = ops_plan.get("host", socket.gethostname())
-                recomputed_hash = hashlib.sha256(command.encode("utf-8")).hexdigest()
-
-                if recomputed_hash != command_hash:
-                    _journal_ops(
-                        "approval",
-                        {
-                            "id": approval_id,
-                            "status": "rejected",
-                            "reason": "Command hash mismatch",
-                            "host": host,
-                        },
-                    )
-                    return {
-                        "final_output": "Ops approval rejected: command hash mismatch.",
-                        "tool_calls": [],
-                        "status": "error",
-                        "trace_id": trace_id,
-                    }
-
-                _journal_ops(
-                    "approval",
-                    {"id": approval_id, "status": "approved", "operator": operator, "host": host},
-                )
-                _journal_ops(
-                    "execution",
-                    {"id": approval_id, "command": command, "operator": operator, "host": host},
-                )
-
-                try:
-                    result = _execute_shell_command(command, "/")
-                except Exception as exc:
-                    _journal_ops(
-                        "result",
-                        {"id": approval_id, "status": "error", "error": str(exc), "host": host},
-                    )
-                    return {
-                        "final_output": f"Ops execution failed: {exc}",
-                        "tool_calls": [],
-                        "status": "error",
-                        "trace_id": trace_id,
-                    }
-
-                stdout_repr = json.dumps(result.stdout or "")
-                stderr_repr = json.dumps(result.stderr or "")
-                status = "SUCCESS" if result.returncode == 0 else "FAILED"
-                verification = ["manual verification required"]
-                _journal_ops(
-                    "result",
-                    {
-                        "id": approval_id,
-                        "exit_code": result.returncode,
-                        "stdout": result.stdout,
-                        "stderr": result.stderr,
-                        "verification": verification,
-                        "status": status,
-                        "host": host,
-                    },
-                )
-                _pending_ops_plans.pop(approval_id, None)
-
-                response = "\n".join(
-                    [
-                        "OPS_RESULT",
-                        f"id: {approval_id}",
-                        f"exit_code: {result.returncode}",
-                        "",
-                        f"stdout: {stdout_repr}",
-                        f"stderr: {stderr_repr}",
-                        "",
-                        "verification:",
-                        "  - manual verification required",
-                        "",
-                        f"status: {status}",
-                    ]
-                )
-
-                if status != "SUCCESS":
-                    response = "\n".join(
-                        [
-                            response,
-                            "recommendation: manual rollback",
-                        ]
-                    )
-
-                return {
-                    "final_output": response,
-                    "tool_calls": [],
-                    "status": "success" if status == "SUCCESS" else "error",
-                    "trace_id": trace_id,
-                }
-
             proposal = _pending_exec_proposals.get(approval_id)
             if not proposal:
                 return {
