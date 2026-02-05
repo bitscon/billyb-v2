@@ -352,6 +352,112 @@ def _parse_duration_seconds(value: str) -> int | None:
         return None
 
 
+def _requires_barn_inspection(text: str) -> bool:
+    lowered = text.lower()
+    if lowered.startswith("/"):
+        return False
+    triggers = [
+        "service",
+        "daemon",
+        "url",
+        "installed",
+        "running",
+        "where is",
+        "where's",
+        "cmdb",
+        "port",
+        "listening",
+        "systemctl",
+        "docker",
+    ]
+    return any(trigger in lowered for trigger in triggers)
+
+
+def _run_inspection_command(command: list[str], timeout: int = 3) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return False, "command not found"
+    except subprocess.TimeoutExpired:
+        return False, "command timed out"
+    except Exception as exc:
+        return False, f"command failed: {exc}"
+    output = (result.stdout or "").strip()
+    if not output:
+        output = (result.stderr or "").strip()
+    return True, output or "no output"
+
+
+def _summarize_output(output: str, max_lines: int = 20) -> str:
+    lines = [line for line in output.splitlines() if line.strip()]
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    return "\n".join(lines[:max_lines] + ["... (truncated)"])
+
+
+def _inspect_barn(query: str) -> str:
+    terms = [word for word in shlex.split(query) if word.isalnum() and len(word) >= 3]
+    search_term = terms[0] if terms else "cmdb"
+
+    systemd_ok, systemd_out = _run_inspection_command(
+        ["systemctl", "list-units", "--type=service", "--all"]
+    )
+    docker_ok, docker_out = _run_inspection_command(
+        ["docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"]
+    )
+    ports_ok, ports_out = _run_inspection_command(["ss", "-ltnp"])
+    rg_ok, rg_out = _run_inspection_command(
+        [
+            "rg",
+            "-n",
+            search_term,
+            "/etc",
+            "/home/billyb",
+            "-g",
+            "*.yml",
+            "-g",
+            "*.yaml",
+            "-g",
+            "*.conf",
+            "-g",
+            "*.env",
+            "-g",
+            "*.service",
+        ],
+        timeout=5,
+    )
+
+    response_lines = [
+        "Inspecting the Barn (read-only).",
+        "I checked:",
+        "- systemd services",
+        "- Docker containers",
+        "- listening ports",
+        "- config files",
+        "",
+        "SYSTEMD:",
+        _summarize_output(systemd_out if systemd_ok else systemd_out),
+        "",
+        "DOCKER:",
+        _summarize_output(docker_out if docker_ok else docker_out),
+        "",
+        "PORTS:",
+        _summarize_output(ports_out if ports_ok else ports_out),
+        "",
+        f"CONFIG SEARCH (term: {search_term}):",
+        _summarize_output(rg_out if rg_ok else rg_out),
+        "",
+        "Let me know which entry looks like the target, or if you want me to refine the search.",
+    ]
+    return "\n".join(response_lines)
+
+
 def _is_high_risk_command(command: str) -> tuple[bool, str]:
     try:
         parts = shlex.split(command)
@@ -673,6 +779,14 @@ class BillyRuntime:
         assert_explicit_memory_write(user_input)
 
         normalized_input = user_input.strip()
+
+        if _requires_barn_inspection(normalized_input):
+            return {
+                "final_output": _inspect_barn(normalized_input),
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
 
         if normalized_input.startswith("/ops "):
             command = normalized_input[len("/ops "):].strip()
