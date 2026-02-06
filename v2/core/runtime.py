@@ -1514,6 +1514,34 @@ class BillyRuntime:
         assert_trace_id(trace_id)
         assert_explicit_memory_write(user_input)
         normalized_input = user_input.strip()
+        if normalized_input.lower().startswith("/simulate "):
+            from core.counterfactual import simulate_action
+
+            proposed = normalized_input[len("/simulate "):].strip()
+            result = simulate_action(
+                task_id=None,
+                plan_id=None,
+                step_id=None,
+                proposed_action=proposed,
+                now=datetime.now(timezone.utc),
+            )
+            response = "\n".join(
+                [
+                    "SIMULATION:",
+                    f"- status: {result.status}",
+                    f"- reasons: {result.reasons}",
+                    f"- required_evidence: {result.required_evidence}",
+                    f"- required_capabilities: {result.required_capabilities}",
+                    f"- triggered_failure_modes: {result.triggered_failure_modes}",
+                    f"- hypothetical_outcomes: {result.hypothetical_outcomes}",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
         if not _should_use_legacy_routing(normalized_input):
             return _run_deterministic_loop(user_input, trace_id)
 
