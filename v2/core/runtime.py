@@ -16,7 +16,7 @@ import subprocess
 import time
 import yaml
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -532,10 +532,48 @@ def _dto_description(task_type: str, request: str) -> tuple[str, str]:
     return description, scope
 
 
+def _task_is_inspection(description: str) -> bool:
+    normalized = description.strip().lower()
+    return normalized.startswith("locate/inspect:")
+
+
+def _introspection_claim(task_id: str) -> str:
+    return f"task:{task_id}:introspection"
+
+
+def _has_introspection_evidence(task_id: str) -> bool:
+    try:
+        from core import evidence as evidence_store
+
+        claim = _introspection_claim(task_id)
+        result = evidence_store.get_best_evidence_for_claim(claim, datetime.now(timezone.utc))
+        return result is not None
+    except Exception:
+        return False
+
+
+def _render_introspection_snapshot(snapshot, task_id: str) -> str:
+    services = snapshot.services or {}
+    containers = snapshot.containers or {}
+    network = snapshot.network or {}
+    filesystem = snapshot.filesystem or {}
+    lines = [
+        "INTROSPECTION:",
+        f"- services checked: {len(services.get('systemd_units', []))}",
+        f"- containers checked: {len(containers.get('containers', []))}",
+        f"- listening sockets: {len(network.get('listening_sockets', []))}",
+        f"- paths checked: {len(filesystem.get('paths', []))}",
+        "",
+        "EVIDENCE RECORDED:",
+        f"- {_introspection_claim(task_id)}",
+    ]
+    return "\n".join(lines)
+
+
 def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
     from core.task_graph import load_graph, save_graph, block_task, create_task, update_status
-    from core.evidence import has_evidence, load_evidence
-    from core.introspection import collect_environment_snapshot, DEFAULT_SCOPE, IntrospectionError
+    from core.evidence import has_evidence, load_evidence, record_evidence
+    from core.introspection import collect_environment_snapshot, IntrospectionError
     from core.capability_contracts import load_contract, validate_preconditions
     from core.task_selector import select_next_task, SelectionContext
     from core.failure_modes import evaluate_failure_modes, RuntimeContext
@@ -552,19 +590,6 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
     load_evidence(trace_id)
     load_trace(trace_id)
     graph = load_graph(trace_id)
-    try:
-        collect_environment_snapshot(DEFAULT_SCOPE)
-    except IntrospectionError as exc:
-        blocker = create_node("BLOCKER", f"M25 blocked: {exc.reason}", related_task_id=None)
-        decision = create_node("DECISION", "introspection refused", related_task_id=None)
-        create_edge(blocker.node_id, decision.node_id, "blocked_by")
-        return _format_del_response(
-            {"selected": "none", "reason": f"M25 blocked: {exc.reason}"},
-            {"id": "none", "description": "none", "status": "none"},
-            "NEXT STEP: none (introspection blocked)",
-            trace_id,
-        )
-
     def _link_evidence_to(node_id: str, claims: list[str]) -> None:
         for claim in claims:
             evidence_node_id = find_latest_node_id("EVIDENCE", claim)
@@ -611,6 +636,39 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
         f"task selection: {selection.status}",
         related_task_id=selection.task_id,
     )
+
+    if selection.status == "selected":
+        task = graph.tasks[selection.task_id]
+        if _task_is_inspection(task.description) and not _has_introspection_evidence(task.task_id):
+            try:
+                snapshot = collect_environment_snapshot(
+                    scope=["services", "containers", "network", "filesystem"]
+                )
+            except IntrospectionError as exc:
+                return _format_del_response(
+                    {"selected": task.task_id, "reason": selection.reason or ""},
+                    {"id": task.task_id, "description": task.description, "status": task.status},
+                    "NEXT STEP: none (introspection blocked)",
+                    trace_id,
+                    task_origination=task_origination_block,
+                )
+            record_evidence(
+                claim=_introspection_claim(task.task_id),
+                source_type="introspection",
+                source_ref="m25:task",
+                raw_content=getattr(snapshot, "snapshot_id", "snapshot"),
+            )
+            response = _format_del_response(
+                {"selected": task.task_id, "reason": selection.reason or ""},
+                {"id": task.task_id, "description": task.description, "status": task.status},
+                "NEXT STEP: evaluate introspection evidence",
+                trace_id,
+                task_origination=task_origination_block,
+            )
+            response["final_output"] = (
+                response["final_output"] + "\n\n" + _render_introspection_snapshot(snapshot, task.task_id)
+            )
+            return response
 
     if selection.status == "blocked":
         reason = selection.reason or "No eligible tasks."
