@@ -1,0 +1,8 @@
+capability: enable_service
+risk_level: high
+requires:
+  ops_required: true
+  evidence: []
+guarantees:
+  - service_enabled
+  - journal_entry_created

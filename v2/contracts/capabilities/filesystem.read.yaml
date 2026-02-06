@@ -1,0 +1,8 @@
+capability: filesystem.read
+risk_level: low
+requires:
+  ops_required: false
+  evidence: []
+guarantees:
+  - file_read
+  - journal_entry_created

@@ -1,0 +1,8 @@
+capability: filesystem.delete
+risk_level: high
+requires:
+  ops_required: false
+  evidence: []
+guarantees:
+  - file_deleted
+  - journal_entry_created

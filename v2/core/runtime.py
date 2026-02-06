@@ -15,6 +15,7 @@ import socket
 import subprocess
 import time
 import yaml
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List
@@ -374,6 +375,506 @@ def _requires_barn_inspection(text: str) -> bool:
     return any(trigger in lowered for trigger in triggers)
 
 
+def _select_active_task(tasks: dict) -> str | None:
+    if not tasks:
+        return None
+    ordered = sorted(
+        tasks.values(),
+        key=lambda node: (node.created_at, node.task_id),
+    )
+    for node in ordered:
+        if node.status not in ("done", "failed"):
+            return node.task_id
+    return ordered[0].task_id
+
+
+def _extract_required_evidence(description: str) -> list[str]:
+    normalized = description.strip()
+    evidence = []
+    if normalized.lower().startswith("claim:"):
+        claim = normalized.split(":", 1)[1].strip()
+        if claim:
+            evidence.append(claim)
+    if "evidence:" in normalized.lower():
+        _, tail = normalized.split("evidence:", 1)
+        for item in tail.split(","):
+            claim = item.strip()
+            if claim:
+                evidence.append(claim)
+    return evidence
+
+
+def _extract_capability(description: str) -> tuple[str, str, bool]:
+    normalized = description.strip()
+    if normalized.startswith("/ops "):
+        rest = normalized[len("/ops "):].strip()
+        parts = shlex.split(rest)
+        if len(parts) == 2:
+            verb, target = parts
+            capability = _ops_capability_for(verb)
+            return capability, f"{verb} {target}", True
+    if normalized.startswith("/exec "):
+        command = normalized[len("/exec "):].strip()
+        action = _classify_shell_action(command, "/")
+        if action and action.get("capability"):
+            return action.get("capability", ""), command, False
+    return "", "", False
+
+
+def _format_blocker_list(items: list[str]) -> str:
+    return ", ".join(items) if items else "none"
+
+
+def _format_del_response(
+    selection: dict,
+    active_task: dict,
+    next_step: str,
+    trace_id: str,
+) -> dict:
+    response = "\n".join(
+        [
+            "TASK SELECTION:",
+            f"- selected: {selection.get('selected', 'none')}",
+            f"- reason: {selection.get('reason', '')}",
+            "",
+            "ACTIVE TASK:",
+            f"- id: {active_task.get('id', 'none')}",
+            f"- description: {active_task.get('description', 'none')}",
+            f"- status: {active_task.get('status', 'none')}",
+            "",
+            "NEXT STEP:",
+            next_step,
+        ]
+    )
+    return {
+        "final_output": response,
+        "tool_calls": [],
+        "status": "success",
+        "trace_id": trace_id,
+    }
+
+
+def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
+    from core.task_graph import load_graph, save_graph, block_task
+    from core.evidence import has_evidence, load_evidence
+    from core.capability_contracts import load_contract, validate_preconditions
+    from core.task_selector import select_next_task, SelectionContext
+    from core.failure_modes import evaluate_failure_modes, RuntimeContext
+    from core.plans_hamp import (
+        create_plan,
+        approve_plan,
+        get_plan,
+        find_plans_for_task,
+        PlanStep,
+    )
+    from core.failure_modes import FAILURE_CODES
+
+    load_evidence(trace_id)
+    graph = load_graph(trace_id)
+
+    selection = select_next_task(
+        list(graph.tasks.values()),
+        SelectionContext(
+            user_input=user_input,
+            trace_id=trace_id,
+            via_ops=user_input.strip().startswith("/ops ")
+            or user_input.strip().lower().startswith("plan")
+            or user_input.strip().upper().startswith("APPROVE PLAN "),
+        ),
+    )
+
+    if selection.status == "blocked":
+        reason = selection.reason or "No eligible tasks."
+        reason_lines = reason.splitlines()
+        first_blocker = ""
+        for line in reason_lines:
+            if line.strip().startswith("- "):
+                first_blocker = line.strip()[2:]
+                break
+        if "missing evidence:" in first_blocker:
+            claim = first_blocker.split("missing evidence:", 1)[1].strip()
+            response = "\n".join(
+                [
+                    "REFUSAL:",
+                    "- code: EVIDENCE_MISSING",
+                    f"- reason: Refusing to act: evidence for claim {claim} is missing or inconsistent.",
+                    "",
+                    "NEXT STEP:",
+                    "none (refused by safety rule)",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+        if "missing capability contract" in first_blocker:
+            response = "\n".join(
+                [
+                    "REFUSAL:",
+                    "- code: CAPABILITY_MISSING",
+                    "- reason: Refusing to act: capability contract missing.",
+                    "",
+                    "NEXT STEP:",
+                    "none (refused by safety rule)",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+        if "capability contract is ambiguous" in first_blocker:
+            response = "\n".join(
+                [
+                    "REFUSAL:",
+                    "- code: CAPABILITY_AMBIGUOUS",
+                    "- reason: Refusing to act: capability contract is ambiguous.",
+                    "",
+                    "NEXT STEP:",
+                    "none (refused by safety rule)",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+        if "requires /ops:" in first_blocker:
+            response = "\n".join(
+                [
+                    "REFUSAL:",
+                    "- code: CAPABILITY_AMBIGUOUS",
+                    "- reason: Refusing to act: capability requires /ops context.",
+                    "",
+                    "NEXT STEP:",
+                    "none (refused by safety rule)",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+        next_step = "NEXT STEP: none (no eligible tasks)"
+        if "missing evidence:" in first_blocker:
+            claim = first_blocker.split("missing evidence:", 1)[1].strip()
+            next_step = f"NEXT STEP: provide evidence {claim}"
+        elif "requires /ops:" in first_blocker:
+            action = first_blocker.split("requires /ops:", 1)[1].strip()
+            next_step = f"NEXT STEP: /ops {action}"
+        elif "missing capability contract:" in first_blocker:
+            cap = first_blocker.split("missing capability contract:", 1)[1].strip()
+            next_step = f"NEXT STEP: resolve dependency missing capability contract: {cap}"
+        elif "dependencies not done" in first_blocker:
+            parts = first_blocker.split()
+            task_ref = parts[1] if len(parts) > 1 else "unknown"
+            next_step = f"NEXT STEP: resolve dependency {task_ref}"
+
+        return _format_del_response(
+            {"selected": "none", "reason": reason},
+            {"id": "none", "description": "none", "status": "none"},
+            next_step,
+            trace_id,
+        )
+
+    task = graph.tasks[selection.task_id]
+
+    failure = evaluate_failure_modes(
+        task,
+        RuntimeContext(
+            trace_id=trace_id,
+            user_input=user_input,
+            via_ops=user_input.strip().startswith("/ops "),
+        ),
+    )
+    if failure.status == "refuse":
+        response = "\n".join(
+            [
+                "REFUSAL:",
+                f"- code: {failure.failure_code}",
+                f"- reason: {failure.reason}",
+                "",
+                "NEXT STEP:",
+                "none (refused by safety rule)",
+            ]
+        )
+        return {
+            "final_output": response,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+        }
+
+    normalized_input = user_input.strip()
+    if normalized_input.upper().startswith("APPROVE PLAN "):
+        plan_id = normalized_input.split("APPROVE PLAN ", 1)[1].strip()
+        if not plan_id:
+            response = "\n".join(
+                [
+                    "REFUSAL:",
+                    "- code: PLAN_REFUSED",
+                    "- reason: Refusing to approve plan: plan_id missing.",
+                    "",
+                    "NEXT STEP:",
+                    "none (refused by safety rule)",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+        try:
+            approve_plan(plan_id)
+        except Exception as exc:
+            response = "\n".join(
+                [
+                    "REFUSAL:",
+                    "- code: PLAN_REFUSED",
+                    f"- reason: Refusing to approve plan: {exc}",
+                    "",
+                    "NEXT STEP:",
+                    "none (refused by safety rule)",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+        plan = get_plan(plan_id)
+        step = plan.steps[0]
+        response = "\n".join(
+            [
+                "ACTIVE PLAN:",
+                f"- plan_id: {plan.plan_id}",
+                f"- step_id: {step.step_id}",
+                f"- description: {step.description}",
+                "",
+                "NEXT STEP:",
+                f"{'NEXT STEP: /ops ' + step.description.split('/ops ',1)[1] if step.ops_required and step.description.startswith('/ops ') else 'NEXT STEP: ' + step.description}",
+            ]
+        )
+        return {
+            "final_output": response,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+        }
+
+    missing_deps = []
+    for dep_id in task.depends_on:
+        dep = graph.tasks.get(dep_id)
+        if not dep or dep.status != "done":
+            missing_deps.append(dep_id)
+
+    if missing_deps:
+        block_task(task.task_id, f"missing dependency: {missing_deps[0]}")
+        save_graph(trace_id)
+        return _format_del_response(
+            {"selected": task.task_id, "reason": selection.reason or ""},
+            {"id": task.task_id, "description": task.description, "status": "blocked"},
+            f"NEXT STEP: resolve dependency {missing_deps[0]}",
+            trace_id,
+        )
+
+    plans_for_task = find_plans_for_task(task.task_id)
+    approved_plan = next((plan for plan in plans_for_task if plan.approved), None)
+    if approved_plan:
+        step = approved_plan.steps[0]
+        response = "\n".join(
+            [
+                "ACTIVE PLAN:",
+                f"- plan_id: {approved_plan.plan_id}",
+                f"- step_id: {step.step_id}",
+                f"- description: {step.description}",
+                "",
+                "NEXT STEP:",
+                f"{'NEXT STEP: /ops ' + step.description.split('/ops ',1)[1] if step.ops_required and step.description.startswith('/ops ') else 'NEXT STEP: ' + step.description}",
+            ]
+        )
+        return {
+            "final_output": response,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+        }
+
+    if normalized_input.lower().startswith("plan"):
+        if task.status != "ready":
+            response = "\n".join(
+                [
+                    "REFUSAL:",
+                    "- code: PLAN_REFUSED",
+                    "- reason: Refusing to plan: task is not ready.",
+                    "",
+                    "NEXT STEP:",
+                    "none (refused by safety rule)",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+        if plans_for_task:
+            response = "\n".join(
+                [
+                    "REFUSAL:",
+                    "- code: PLAN_REFUSED",
+                    "- reason: Refusing to plan: plan already exists for task.",
+                    "",
+                    "NEXT STEP:",
+                    "none (refused by safety rule)",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+        capability, _, via_ops = _extract_capability(task.description)
+        contract = None
+        if capability:
+            try:
+                contract = load_contract(capability)
+            except Exception:
+                response = "\n".join(
+                    [
+                        "REFUSAL:",
+                        "- code: PLAN_REFUSED",
+                        "- reason: Refusing to plan: capability contract missing.",
+                        "",
+                        "NEXT STEP:",
+                        "none (refused by safety rule)",
+                    ]
+                )
+                return {
+                    "final_output": response,
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                }
+        required_evidence = _extract_required_evidence(task.description)
+        ops_required = False
+        if contract:
+            required_evidence.extend(contract.requires.get("evidence", []))
+            ops_required = bool(contract.requires.get("ops_required"))
+        step = PlanStep(
+            step_id=str(uuid.uuid4()),
+            description=task.description,
+            required_evidence=required_evidence,
+            required_capability=capability,
+            ops_required=ops_required,
+            failure_modes=sorted(FAILURE_CODES),
+        )
+        plan = create_plan(task.task_id, [step])
+        response = "\n".join(
+            [
+                "PLAN PROPOSAL:",
+                f"- plan_id: {plan.plan_id}",
+                f"- task_id: {plan.task_id}",
+                "",
+                "STEPS:",
+                "1. " + step.description,
+                f"   - capability: {step.required_capability}",
+                f"   - ops_required: {str(step.ops_required).lower()}",
+                f"   - required_evidence: {step.required_evidence}",
+                f"   - failure_modes: {step.failure_modes}",
+                "",
+                "APPROVAL REQUIRED:",
+                f"APPROVE PLAN {plan.plan_id}",
+            ]
+        )
+        return {
+            "final_output": response,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+        }
+
+    capability, action_text, via_ops = _extract_capability(task.description)
+    contract = None
+    if capability:
+        try:
+            contract = load_contract(capability)
+        except ContractViolation:
+            block_task(task.task_id, "missing capability contract")
+            save_graph(trace_id)
+            return _format_del_response(
+                {"selected": task.task_id, "reason": selection.reason or ""},
+                {"id": task.task_id, "description": task.description, "status": "blocked"},
+                f"NEXT STEP: resolve dependency missing capability contract: {capability}",
+                trace_id,
+            )
+
+    required_evidence = _extract_required_evidence(task.description)
+    if contract:
+        required_evidence.extend(contract.requires.get("evidence", []))
+    missing_evidence = [claim for claim in required_evidence if not has_evidence(claim)]
+    if missing_evidence:
+        block_task(task.task_id, f"no evidence: {missing_evidence[0]}")
+        save_graph(trace_id)
+        return _format_del_response(
+            {"selected": task.task_id, "reason": selection.reason or ""},
+            {"id": task.task_id, "description": task.description, "status": "blocked"},
+            f"NEXT STEP: provide evidence {missing_evidence[0]}",
+            trace_id,
+        )
+
+    if contract:
+        ok, reason = validate_preconditions(contract, {"trace_id": trace_id, "via_ops": via_ops})
+        if not ok:
+            block_task(task.task_id, reason)
+            save_graph(trace_id)
+            if reason == "ops_required":
+                return _format_del_response(
+                    {"selected": task.task_id, "reason": selection.reason or ""},
+                    {"id": task.task_id, "description": task.description, "status": "blocked"},
+                    f"NEXT STEP: /ops {action_text}",
+                    trace_id,
+                )
+            return _format_del_response(
+                {"selected": task.task_id, "reason": selection.reason or ""},
+                {"id": task.task_id, "description": task.description, "status": "blocked"},
+                "NEXT STEP: none (task complete)",
+                trace_id,
+            )
+
+    if task.status in ("done", "failed"):
+        save_graph(trace_id)
+        return _format_del_response(
+            {"selected": task.task_id, "reason": selection.reason or ""},
+            {"id": task.task_id, "description": task.description, "status": task.status},
+            "NEXT STEP: none (task complete)",
+            trace_id,
+        )
+
+    if contract and contract.requires.get("ops_required"):
+        return _format_del_response(
+            {"selected": task.task_id, "reason": selection.reason or ""},
+            {"id": task.task_id, "description": task.description, "status": task.status},
+            f"NEXT STEP: /ops {action_text}",
+            trace_id,
+        )
+
+    return _format_del_response(
+        {"selected": task.task_id, "reason": selection.reason or ""},
+        {"id": task.task_id, "description": task.description, "status": task.status},
+        "NEXT STEP: none (task complete)",
+        trace_id,
+    )
+
+
 def _is_action_request(text: str) -> bool:
     lowered = text.lower()
     action_triggers = [
@@ -456,6 +957,17 @@ def _build_atomic_ops_plan(verb: str, target: str) -> str | None:
             "Approve? (yes/no)",
         ]
     )
+
+
+def _ops_capability_for(verb: str) -> str:
+    mapping = {
+        "restart": "restart_service",
+        "start": "start_service",
+        "stop": "stop_service",
+        "enable": "enable_service",
+        "disable": "disable_service",
+    }
+    return mapping.get(verb, "")
 
 
 def _run_inspection_command(command: list[str], timeout: int = 3) -> tuple[bool, str]:
@@ -773,6 +1285,13 @@ def _classify_shell_action(command: str, working_dir: str) -> dict | None:
 
     return None
 
+
+def mark_claim_known(claim: str, trace_id: str) -> None:
+    from core.evidence import load_evidence, assert_claim_known
+
+    load_evidence(trace_id)
+    assert_claim_known(claim)
+
 _capability_registry.register({
     "capability": "write_file",
     "tool": {
@@ -909,9 +1428,13 @@ class BillyRuntime:
         return self._identity_guard(prompt, answer)
 
     def run_turn(self, user_input: str, session_context: Dict[str, Any]):
-        trace_id = f"trace-{int(time.time() * 1000)}"
+        trace_id = session_context.get("trace_id") if isinstance(session_context, dict) else None
+        if not trace_id:
+            trace_id = f"trace-{int(time.time() * 1000)}"
         assert_trace_id(trace_id)
         assert_explicit_memory_write(user_input)
+
+        return _run_deterministic_loop(user_input, trace_id)
 
         normalized_input = user_input.strip()
 
@@ -931,6 +1454,36 @@ class BillyRuntime:
             if verb not in allowed_verbs:
                 return {
                     "final_output": "Atomic action required: unsupported verb.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            from core.capability_contracts import load_contract, validate_preconditions
+
+            capability = _ops_capability_for(verb)
+            try:
+                contract = load_contract(capability)
+            except ContractViolation:
+                return {
+                    "final_output": "Execution denied: missing capability contract.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            if not contract.requires.get("ops_required"):
+                return {
+                    "final_output": "Execution denied: ops not required for this capability.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            ok, reason = validate_preconditions(contract, {"trace_id": trace_id, "via_ops": True})
+            if not ok:
+                return {
+                    "final_output": f"Execution denied: {reason}",
                     "tool_calls": [],
                     "status": "error",
                     "trace_id": trace_id,
@@ -1179,172 +1732,222 @@ class BillyRuntime:
                 capability = action.get("capability", "")
                 action_working_dir = action.get("working_dir", working_dir)
                 grant = _autonomy_registry.get_grant(capability)
+            else:
+                capability = ""
 
-                if not action.get("valid", True):
-                    reason = action.get("reason", "Capability scope violation")
-                    _journal_exec_contract(
-                        "capability_denied",
-                        {"capability": capability, "command": command, "reason": reason},
-                    )
-                    return {
-                        "final_output": f"Execution denied: {reason}",
-                        "tool_calls": [],
-                        "status": "error",
-                        "trace_id": trace_id,
-                    }
-
-                allowed, reason, remaining = _autonomy_registry.is_grant_allowed(
-                    capability,
-                    action,
+            if not capability:
+                _journal_exec_contract(
+                    "capability_denied",
+                    {"capability": capability or "unknown", "command": command, "reason": "Missing capability"},
                 )
+                return {
+                    "final_output": "Execution denied: missing capability contract.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
 
-                preset = _default_capability_grants.get(capability, {})
-                require_grant = preset.get("require_grant", False)
+            from core.capability_contracts import load_contract, validate_preconditions
 
-                if not grant and require_grant:
-                    _journal_exec_contract(
-                        "capability_denied",
-                        {"capability": capability, "command": command, "reason": "Capability not granted"},
-                    )
+            try:
+                contract = load_contract(capability)
+            except ContractViolation:
+                _journal_exec_contract(
+                    "capability_denied",
+                    {"capability": capability, "command": command, "reason": "Missing capability contract"},
+                )
+                return {
+                    "final_output": "Execution denied: missing capability contract.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            ok, reason = validate_preconditions(contract, {"trace_id": trace_id, "via_ops": False})
+            if not ok:
+                _journal_exec_contract(
+                    "capability_denied",
+                    {"capability": capability, "command": command, "reason": reason},
+                )
+                if reason == "ops_required":
                     return {
-                        "final_output": "Execution denied: capability not granted.",
+                        "final_output": "Execution denied: capability requires /ops.",
                         "tool_calls": [],
                         "status": "error",
                         "trace_id": trace_id,
                     }
+                return {
+                    "final_output": f"Execution denied: {reason}",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
 
-                if capability == "git.push":
-                    repo_root = Path(action_working_dir)
-                    clean, lines = _git_status_clean(repo_root)
-                    if not clean:
-                        _journal_exec_contract(
-                            "capability_denied",
-                            {
-                                "capability": capability,
-                                "command": command,
-                                "reason": "Working tree not clean",
-                                "details": lines,
-                            },
-                        )
-                        return {
-                            "final_output": "Execution denied: working tree not clean.",
-                            "tool_calls": [],
-                            "status": "error",
-                            "trace_id": trace_id,
-                        }
+            if not action.get("valid", True):
+                reason = action.get("reason", "Capability scope violation")
+                _journal_exec_contract(
+                    "capability_denied",
+                    {"capability": capability, "command": command, "reason": reason},
+                )
+                return {
+                    "final_output": f"Execution denied: {reason}",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
 
-                if allowed and grant and grant.get("mode") == "auto":
+            allowed, reason, remaining = _autonomy_registry.is_grant_allowed(
+                capability,
+                action,
+            )
+
+            preset = _default_capability_grants.get(capability, {})
+            require_grant = preset.get("require_grant", False)
+
+            if not grant and require_grant:
+                _journal_exec_contract(
+                    "capability_denied",
+                    {"capability": capability, "command": command, "reason": "Capability not granted"},
+                )
+                return {
+                    "final_output": "Execution denied: capability not granted.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            if capability == "git.push":
+                repo_root = Path(action_working_dir)
+                clean, lines = _git_status_clean(repo_root)
+                if not clean:
                     _journal_exec_contract(
-                        "auto_execution",
+                        "capability_denied",
                         {
                             "capability": capability,
                             "command": command,
-                            "working_dir": action_working_dir,
-                            "limits_remaining": remaining,
+                            "reason": "Working tree not clean",
+                            "details": lines,
                         },
                     )
-                    try:
-                        result = _execute_shell_command(command, action_working_dir)
-                    except Exception as exc:
-                        _journal_exec_contract(
-                            "result",
-                            {"status": "error", "error": str(exc)},
-                        )
-                        return {
-                            "final_output": f"Execution failed: {exc}",
-                            "tool_calls": [],
-                            "status": "error",
-                            "trace_id": trace_id,
-                        }
-
-                    remaining = _autonomy_registry.consume_grant(capability)
-                    verification = _verify_command_result(command)
-                    stdout_repr = json.dumps(result.stdout or "")
-                    stderr_repr = json.dumps(result.stderr or "")
-                    _journal_exec_contract(
-                        "result",
-                        {
-                            "capability": capability,
-                            "exit_code": result.returncode,
-                            "stdout": result.stdout,
-                            "stderr": result.stderr,
-                            "verification": verification,
-                            "limits_remaining": remaining,
-                        },
-                    )
-
-                    response = "\n".join(
-                        [
-                            "EXECUTION_RESULT",
-                            "id: auto-exec",
-                            f"exit_code: {result.returncode}",
-                            f"stdout: {stdout_repr}",
-                            f"stderr: {stderr_repr}",
-                            f"verification: {verification}",
-                        ]
-                    )
                     return {
-                        "final_output": response,
-                        "tool_calls": [],
-                        "status": "success",
-                        "trace_id": trace_id,
-                    }
-
-                if not allowed and reason in (
-                    "Capability scope violation",
-                    "Capability limits exceeded",
-                    "Capability expired",
-                    "Capability revoked",
-                ):
-                    _journal_exec_contract(
-                        "capability_denied",
-                        {"capability": capability, "command": command, "reason": reason},
-                    )
-                    return {
-                        "final_output": f"Execution denied: {reason}",
+                        "final_output": "Execution denied: working tree not clean.",
                         "tool_calls": [],
                         "status": "error",
                         "trace_id": trace_id,
                     }
 
-                if capability == "git.push":
-                    repo_root = Path(action_working_dir)
-                    branch = _git_current_branch(repo_root)
-                    proposal_id = _next_exec_contract_id()
-                    proposal = {
-                        "id": proposal_id,
-                        "type": "git.push",
+            if allowed and grant and grant.get("mode") == "auto":
+                _journal_exec_contract(
+                    "auto_execution",
+                    {
+                        "capability": capability,
                         "command": command,
                         "working_dir": action_working_dir,
-                        "capability": capability,
-                        "risk": "medium",
-                        "expected_result": "git push executed",
-                        "preconditions": [
-                            "clean working tree",
-                            "no untracked files",
-                        ],
-                        "branch": branch,
-                    }
-                    _pending_exec_proposals[proposal_id] = proposal
-                    _journal_exec_contract("proposal", proposal)
-
-                    response = "\n".join(
-                        [
-                            "PROPOSED_ACTION",
-                            f"id: {proposal_id}",
-                            "type: git.push",
-                            "preconditions:",
-                            "  - clean working tree",
-                            "  - no untracked files",
-                            f"branch: {branch}",
-                        ]
+                        "limits_remaining": remaining,
+                    },
+                )
+                try:
+                    result = _execute_shell_command(command, action_working_dir)
+                except Exception as exc:
+                    _journal_exec_contract(
+                        "result",
+                        {"status": "error", "error": str(exc)},
                     )
                     return {
-                        "final_output": response,
+                        "final_output": f"Execution failed: {exc}",
                         "tool_calls": [],
-                        "status": "success",
+                        "status": "error",
                         "trace_id": trace_id,
                     }
+
+                remaining = _autonomy_registry.consume_grant(capability)
+                verification = _verify_command_result(command)
+                stdout_repr = json.dumps(result.stdout or "")
+                stderr_repr = json.dumps(result.stderr or "")
+                _journal_exec_contract(
+                    "result",
+                    {
+                        "capability": capability,
+                        "exit_code": result.returncode,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "verification": verification,
+                        "limits_remaining": remaining,
+                    },
+                )
+
+                response = "\n".join(
+                    [
+                        "EXECUTION_RESULT",
+                        "id: auto-exec",
+                        f"exit_code: {result.returncode}",
+                        f"stdout: {stdout_repr}",
+                        f"stderr: {stderr_repr}",
+                        f"verification: {verification}",
+                    ]
+                )
+                return {
+                    "final_output": response,
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                }
+
+            if not allowed and reason in (
+                "Capability scope violation",
+                "Capability limits exceeded",
+                "Capability expired",
+                "Capability revoked",
+            ):
+                _journal_exec_contract(
+                    "capability_denied",
+                    {"capability": capability, "command": command, "reason": reason},
+                )
+                return {
+                    "final_output": f"Execution denied: {reason}",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+
+            if capability == "git.push":
+                repo_root = Path(action_working_dir)
+                branch = _git_current_branch(repo_root)
+                proposal_id = _next_exec_contract_id()
+                proposal = {
+                    "id": proposal_id,
+                    "type": "git.push",
+                    "command": command,
+                    "working_dir": action_working_dir,
+                    "capability": capability,
+                    "risk": "medium",
+                    "expected_result": "git push executed",
+                    "preconditions": [
+                        "clean working tree",
+                        "no untracked files",
+                    ],
+                    "branch": branch,
+                }
+                _pending_exec_proposals[proposal_id] = proposal
+                _journal_exec_contract("proposal", proposal)
+
+                response = "\n".join(
+                    [
+                        "PROPOSED_ACTION",
+                        f"id: {proposal_id}",
+                        "type: git.push",
+                        "preconditions:",
+                        "  - clean working tree",
+                        "  - no untracked files",
+                        f"branch: {branch}",
+                    ]
+                )
+                return {
+                    "final_output": response,
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                }
 
             proposal_id = _next_exec_contract_id()
             expected_result = _expected_result_for_command(command)

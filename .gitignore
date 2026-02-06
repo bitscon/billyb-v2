@@ -1,8 +1,13 @@
-__pycache__/
+# Python bytecode
 *.pyc
-.pytest_cache/
+__pycache__/
 
-v2/.venv/
+# Runtime state and artifacts
+v2/state/
+
+# Virtual environments
 venv/
+v2/.venv/
 
-v2/var/
+# Local docs scratch
+/docs/

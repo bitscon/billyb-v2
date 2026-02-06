@@ -1,0 +1,8 @@
+capability: git.push
+risk_level: medium
+requires:
+  ops_required: false
+  evidence: []
+guarantees:
+  - git_push_executed
+  - journal_entry_created
