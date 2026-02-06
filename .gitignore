@@ -4,6 +4,7 @@ __pycache__/
 
 # Runtime state and artifacts
 v2/state/
+v2/var/
 
 # Virtual environments
 venv/

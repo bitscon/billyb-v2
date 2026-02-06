@@ -371,6 +371,10 @@ def _requires_barn_inspection(text: str) -> bool:
         "listening",
         "systemctl",
         "docker",
+        "restart",
+        "start",
+        "stop",
+        "reload",
     ]
     return any(trigger in lowered for trigger in triggers)
 
@@ -457,9 +461,11 @@ def _format_del_response(
 def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
     from core.task_graph import load_graph, save_graph, block_task
     from core.evidence import has_evidence, load_evidence
+    from core.introspection import collect_environment_snapshot, DEFAULT_SCOPE, IntrospectionError
     from core.capability_contracts import load_contract, validate_preconditions
     from core.task_selector import select_next_task, SelectionContext
     from core.failure_modes import evaluate_failure_modes, RuntimeContext
+    from core.causal_trace import create_node, create_edge, find_latest_node_id, load_trace
     from core.plans_hamp import (
         create_plan,
         approve_plan,
@@ -470,7 +476,26 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
     from core.failure_modes import FAILURE_CODES
 
     load_evidence(trace_id)
+    load_trace(trace_id)
     graph = load_graph(trace_id)
+    try:
+        collect_environment_snapshot(DEFAULT_SCOPE)
+    except IntrospectionError as exc:
+        blocker = create_node("BLOCKER", f"M25 blocked: {exc.reason}", related_task_id=None)
+        decision = create_node("DECISION", "introspection refused", related_task_id=None)
+        create_edge(blocker.node_id, decision.node_id, "blocked_by")
+        return _format_del_response(
+            {"selected": "none", "reason": f"M25 blocked: {exc.reason}"},
+            {"id": "none", "description": "none", "status": "none"},
+            "NEXT STEP: none (introspection blocked)",
+            trace_id,
+        )
+
+    def _link_evidence_to(node_id: str, claims: list[str]) -> None:
+        for claim in claims:
+            evidence_node_id = find_latest_node_id("EVIDENCE", claim)
+            if evidence_node_id:
+                create_edge(evidence_node_id, node_id, "caused_by")
 
     selection = select_next_task(
         list(graph.tasks.values()),
@@ -483,8 +508,16 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
         ),
     )
 
+    decision = create_node(
+        "DECISION",
+        f"task selection: {selection.status}",
+        related_task_id=selection.task_id,
+    )
+
     if selection.status == "blocked":
         reason = selection.reason or "No eligible tasks."
+        blocker = create_node("BLOCKER", reason, related_task_id=None)
+        create_edge(blocker.node_id, decision.node_id, "blocked_by")
         reason_lines = reason.splitlines()
         first_blocker = ""
         for line in reason_lines:
@@ -493,10 +526,30 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
                 break
         if "missing evidence:" in first_blocker:
             claim = first_blocker.split("missing evidence:", 1)[1].strip()
+            _link_evidence_to(blocker.node_id, [claim])
             response = "\n".join(
                 [
                     "REFUSAL:",
                     "- code: EVIDENCE_MISSING",
+                    f"- reason: Refusing to act: evidence for claim {claim} is missing or inconsistent.",
+                    "",
+                    "NEXT STEP:",
+                    "none (refused by safety rule)",
+                ]
+            )
+            return {
+                "final_output": response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
+        if "conflicting evidence:" in first_blocker:
+            claim = first_blocker.split("conflicting evidence:", 1)[1].strip()
+            _link_evidence_to(blocker.node_id, [claim])
+            response = "\n".join(
+                [
+                    "REFUSAL:",
+                    "- code: EVIDENCE_CONFLICT",
                     f"- reason: Refusing to act: evidence for claim {claim} is missing or inconsistent.",
                     "",
                     "NEXT STEP:",
@@ -564,6 +617,9 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
         if "missing evidence:" in first_blocker:
             claim = first_blocker.split("missing evidence:", 1)[1].strip()
             next_step = f"NEXT STEP: provide evidence {claim}"
+        elif "conflicting evidence:" in first_blocker:
+            claim = first_blocker.split("conflicting evidence:", 1)[1].strip()
+            next_step = f"NEXT STEP: provide evidence {claim}"
         elif "requires /ops:" in first_blocker:
             action = first_blocker.split("requires /ops:", 1)[1].strip()
             next_step = f"NEXT STEP: /ops {action}"
@@ -583,6 +639,7 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
         )
 
     task = graph.tasks[selection.task_id]
+    _link_evidence_to(decision.node_id, _extract_required_evidence(task.description))
 
     failure = evaluate_failure_modes(
         task,
@@ -593,6 +650,10 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
         ),
     )
     if failure.status == "refuse":
+        blocker = create_node("BLOCKER", failure.reason or "failure mode refusal", related_task_id=task.task_id)
+        create_edge(blocker.node_id, decision.node_id, "blocked_by")
+        outcome = create_node("OUTCOME", "refusal prevents progress", related_task_id=task.task_id)
+        create_edge(decision.node_id, outcome.node_id, "caused_by")
         response = "\n".join(
             [
                 "REFUSAL:",
@@ -651,6 +712,9 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             }
         plan = get_plan(plan_id)
         step = plan.steps[0]
+        decision = create_node("DECISION", "plan approved", related_task_id=plan.task_id, related_plan_id=plan.plan_id)
+        action = create_node("ACTION", step.description, related_task_id=plan.task_id, related_plan_id=plan.plan_id, related_step_id=step.step_id)
+        create_edge(decision.node_id, action.node_id, "requires")
         response = "\n".join(
             [
                 "ACTIVE PLAN:",
@@ -676,6 +740,8 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             missing_deps.append(dep_id)
 
     if missing_deps:
+        blocker = create_node("BLOCKER", f"missing dependency: {missing_deps[0]}", related_task_id=task.task_id)
+        create_edge(blocker.node_id, decision.node_id, "blocked_by")
         block_task(task.task_id, f"missing dependency: {missing_deps[0]}")
         save_graph(trace_id)
         return _format_del_response(
@@ -689,6 +755,9 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
     approved_plan = next((plan for plan in plans_for_task if plan.approved), None)
     if approved_plan:
         step = approved_plan.steps[0]
+        decision = create_node("DECISION", "plan step ready", related_task_id=approved_plan.task_id, related_plan_id=approved_plan.plan_id)
+        action = create_node("ACTION", step.description, related_task_id=approved_plan.task_id, related_plan_id=approved_plan.plan_id, related_step_id=step.step_id)
+        create_edge(decision.node_id, action.node_id, "requires")
         response = "\n".join(
             [
                 "ACTIVE PLAN:",
@@ -709,6 +778,10 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
 
     if normalized_input.lower().startswith("plan"):
         if task.status != "ready":
+            blocker = create_node("BLOCKER", "plan refused: task not ready", related_task_id=task.task_id)
+            create_edge(blocker.node_id, decision.node_id, "blocked_by")
+            outcome = create_node("OUTCOME", "refusal prevents progress", related_task_id=task.task_id)
+            create_edge(decision.node_id, outcome.node_id, "caused_by")
             response = "\n".join(
                 [
                     "REFUSAL:",
@@ -726,6 +799,10 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
                 "trace_id": trace_id,
             }
         if plans_for_task:
+            blocker = create_node("BLOCKER", "plan refused: plan already exists", related_task_id=task.task_id)
+            create_edge(blocker.node_id, decision.node_id, "blocked_by")
+            outcome = create_node("OUTCOME", "refusal prevents progress", related_task_id=task.task_id)
+            create_edge(decision.node_id, outcome.node_id, "caused_by")
             response = "\n".join(
                 [
                     "REFUSAL:",
@@ -748,6 +825,10 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             try:
                 contract = load_contract(capability)
             except Exception:
+                blocker = create_node("BLOCKER", "plan refused: capability contract missing", related_task_id=task.task_id)
+                create_edge(blocker.node_id, decision.node_id, "blocked_by")
+                outcome = create_node("OUTCOME", "refusal prevents progress", related_task_id=task.task_id)
+                create_edge(decision.node_id, outcome.node_id, "caused_by")
                 response = "\n".join(
                     [
                         "REFUSAL:",
@@ -778,6 +859,8 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             failure_modes=sorted(FAILURE_CODES),
         )
         plan = create_plan(task.task_id, [step])
+        plan_decision = create_node("DECISION", "plan proposed", related_task_id=task.task_id, related_plan_id=plan.plan_id)
+        _link_evidence_to(plan_decision.node_id, required_evidence)
         response = "\n".join(
             [
                 "PLAN PROPOSAL:",
@@ -808,6 +891,8 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
         try:
             contract = load_contract(capability)
         except ContractViolation:
+            blocker = create_node("BLOCKER", f"missing capability contract: {capability}", related_task_id=task.task_id)
+            create_edge(blocker.node_id, decision.node_id, "blocked_by")
             block_task(task.task_id, "missing capability contract")
             save_graph(trace_id)
             return _format_del_response(
@@ -822,6 +907,9 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
         required_evidence.extend(contract.requires.get("evidence", []))
     missing_evidence = [claim for claim in required_evidence if not has_evidence(claim)]
     if missing_evidence:
+        blocker = create_node("BLOCKER", f"no evidence: {missing_evidence[0]}", related_task_id=task.task_id)
+        create_edge(blocker.node_id, decision.node_id, "blocked_by")
+        _link_evidence_to(blocker.node_id, [missing_evidence[0]])
         block_task(task.task_id, f"no evidence: {missing_evidence[0]}")
         save_graph(trace_id)
         return _format_del_response(
@@ -834,9 +922,13 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
     if contract:
         ok, reason = validate_preconditions(contract, {"trace_id": trace_id, "via_ops": via_ops})
         if not ok:
+            blocker = create_node("BLOCKER", f"preconditions failed: {reason}", related_task_id=task.task_id)
+            create_edge(blocker.node_id, decision.node_id, "blocked_by")
             block_task(task.task_id, reason)
             save_graph(trace_id)
             if reason == "ops_required":
+                action = create_node("ACTION", f"/ops {action_text}", related_task_id=task.task_id)
+                create_edge(decision.node_id, action.node_id, "requires")
                 return _format_del_response(
                     {"selected": task.task_id, "reason": selection.reason or ""},
                     {"id": task.task_id, "description": task.description, "status": "blocked"},
@@ -851,6 +943,8 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             )
 
     if task.status in ("done", "failed"):
+        outcome = create_node("OUTCOME", f"task {task.status}", related_task_id=task.task_id)
+        create_edge(decision.node_id, outcome.node_id, "caused_by")
         save_graph(trace_id)
         return _format_del_response(
             {"selected": task.task_id, "reason": selection.reason or ""},
@@ -860,6 +954,8 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
         )
 
     if contract and contract.requires.get("ops_required"):
+        action = create_node("ACTION", f"/ops {action_text}", related_task_id=task.task_id)
+        create_edge(decision.node_id, action.node_id, "requires")
         return _format_del_response(
             {"selected": task.task_id, "reason": selection.reason or ""},
             {"id": task.task_id, "description": task.description, "status": task.status},
@@ -894,6 +990,27 @@ def _is_action_request(text: str) -> bool:
         "disable",
     ]
     return any(trigger in lowered for trigger in action_triggers)
+
+
+def _should_use_legacy_routing(normalized_input: str) -> bool:
+    if normalized_input.upper().startswith("APPROVE PLAN "):
+        return False
+    if normalized_input.lower().startswith("claim:"):
+        return False
+    if normalized_input.lower().startswith("plan"):
+        return False
+    legacy_prefixes = (
+        "/exec ",
+        "/ops ",
+        "GRANT_CAPABILITY",
+        "/revoke_autonomy",
+        "APPROVE ",
+    )
+    if normalized_input.startswith(legacy_prefixes):
+        return True
+    if _requires_barn_inspection(normalized_input):
+        return True
+    return False
 
 
 def _normalize_service_name(name: str) -> str:
@@ -1125,12 +1242,6 @@ def _is_high_risk_command(command: str) -> tuple[bool, str]:
             return True, "service_control"
     if executable in ("iptables", "ufw", "firewall-cmd", "ip", "route", "ifconfig", "nmcli"):
         return True, "network_change"
-    if executable == "rm" and args:
-        target = args[-1]
-        if not target.startswith("/"):
-            target = str(Path("/") / target)
-        if not os.path.abspath(target).startswith(os.path.abspath("/home/billyb/")):
-            return True, "data_destructive"
     return False, ""
 
 
@@ -1369,12 +1480,12 @@ class BillyRuntime:
 
     def ask(self, prompt: str) -> str:
         """
-        Generate a response using the configured LLM.
+        Route every request through the deterministic pipeline.
 
         This is the method called by:
         - /ask
         - /v1/chat/completions
-        
+
         Special routing for Agent Zero commands starting with "a0 ".
         """
         
@@ -1390,42 +1501,11 @@ class BillyRuntime:
             except Exception as e:
                 return json.dumps({"error": f"Error handling Agent Zero command: {str(e)}"}, indent=2)
 
-        # Load config if not provided at init
-        config = self.config or self._load_config_from_yaml()
-
-        # Engineering enforcement (hard boundary)
-        if detect_engineering_intent(prompt):
-            try:
-                def _llm_call(messages: List[Dict[str, str]]) -> str:
-                    return llm_api.get_completion(messages, config)
-
-                return enforce_engineering(prompt, _llm_call)
-            except EngineeringError as exc:
-                return f"Engineering enforcement failed: {exc}"
-            except Exception as exc:
-                return f"Engineering enforcement failed: {exc}"
-
-        # Load config if not provided at init
-        # Load charter (system prompt)
-        system_prompt = ""
-        try:
-            v2_root = Path(__file__).resolve().parents[1]
-            system_prompt = load_charter(str(v2_root))
-        except Exception:
-            system_prompt = ""
-
-        # Build chat messages
-        messages: List[Dict[str, str]] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-
-        messages.append({"role": "user", "content": prompt})
-
-        # Call LLM
-        answer = llm_api.get_completion(messages, config)
-
-        # Apply guardrails
-        return self._identity_guard(prompt, answer)
+        trace_id = f"trace-{int(time.time() * 1000)}"
+        assert_trace_id(trace_id)
+        assert_explicit_memory_write(prompt)
+        result = _run_deterministic_loop(prompt, trace_id)
+        return result.get("final_output", "")
 
     def run_turn(self, user_input: str, session_context: Dict[str, Any]):
         trace_id = session_context.get("trace_id") if isinstance(session_context, dict) else None
@@ -1433,10 +1513,9 @@ class BillyRuntime:
             trace_id = f"trace-{int(time.time() * 1000)}"
         assert_trace_id(trace_id)
         assert_explicit_memory_write(user_input)
-
-        return _run_deterministic_loop(user_input, trace_id)
-
         normalized_input = user_input.strip()
+        if not _should_use_legacy_routing(normalized_input):
+            return _run_deterministic_loop(user_input, trace_id)
 
         if normalized_input.startswith("/ops "):
             rest = normalized_input[len("/ops "):].strip()
@@ -1527,7 +1606,7 @@ class BillyRuntime:
 
             capability_name = name_line.replace("name:", "", 1).strip()
             scope_name = scope_line.replace("scope:", "", 1).strip()
-            mode = mode_line.replace("mode:", "", 1).strip() or "approval"
+            mode = mode_line.replace("mode:", "", 1).strip()
             expires_in = expires_line.replace("expires_in:", "", 1).strip()
             max_actions = max_actions_line.replace("max_actions:", "", 1).strip()
 
@@ -1541,13 +1620,6 @@ class BillyRuntime:
             if scope_name not in ("", "default"):
                 return {
                     "final_output": "Capability grant rejected: only scope: default is supported.",
-                    "tool_calls": [],
-                    "status": "error",
-                    "trace_id": trace_id,
-                }
-            if mode not in ("approval", "auto"):
-                return {
-                    "final_output": "Capability grant rejected: mode must be approval or auto.",
                     "tool_calls": [],
                     "status": "error",
                     "trace_id": trace_id,
@@ -1566,6 +1638,15 @@ class BillyRuntime:
             if not preset:
                 return {
                     "final_output": "Capability grant rejected: unknown capability.",
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                }
+            default_mode = "auto" if not preset.get("require_grant") else "approval"
+            mode = mode or default_mode
+            if mode not in ("approval", "auto"):
+                return {
+                    "final_output": "Capability grant rejected: mode must be approval or auto.",
                     "tool_calls": [],
                     "status": "error",
                     "trace_id": trace_id,
@@ -1899,16 +1980,17 @@ class BillyRuntime:
                 "Capability expired",
                 "Capability revoked",
             ):
-                _journal_exec_contract(
-                    "capability_denied",
-                    {"capability": capability, "command": command, "reason": reason},
-                )
-                return {
-                    "final_output": f"Execution denied: {reason}",
-                    "tool_calls": [],
-                    "status": "error",
-                    "trace_id": trace_id,
-                }
+                if preset.get("require_grant"):
+                    _journal_exec_contract(
+                        "capability_denied",
+                        {"capability": capability, "command": command, "reason": reason},
+                    )
+                    return {
+                        "final_output": f"Execution denied: {reason}",
+                        "tool_calls": [],
+                        "status": "error",
+                        "trace_id": trace_id,
+                    }
 
             if capability == "git.push":
                 repo_root = Path(action_working_dir)

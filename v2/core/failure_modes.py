@@ -8,7 +8,7 @@ import shlex
 
 from core.contracts.loader import ContractViolation
 from core.task_graph import TaskNode
-from core.evidence import load_evidence, list_evidence
+from core.evidence import load_evidence, _evaluate_claim_records
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,7 @@ FAILURE_CODES = {
     "EVIDENCE_MISSING",
     "EVIDENCE_CONFLICT",
     "EVIDENCE_STALE",
+    "EVIDENCE_SCOPE",
     "CAPABILITY_MISSING",
     "CAPABILITY_AMBIGUOUS",
     "CAPABILITY_INVALID",
@@ -188,28 +189,31 @@ def _valid_contract_schema(contract: dict) -> bool:
 def _evaluate_evidence(required_claims: List[str], ttl_seconds: int) -> Optional[FailureResult]:
     now = datetime.now(timezone.utc)
     for claim in required_claims:
-        records = list_evidence(claim)
-        if not records:
+        status, _ = _evaluate_claim_records(claim, now)
+        if status == "missing":
             return FailureResult(
                 status="refuse",
                 failure_code="EVIDENCE_MISSING",
                 reason=f"Refusing to act: evidence for claim {claim} is missing or inconsistent.",
             )
-        hashes = {record.content_hash for record in records}
-        if len(hashes) > 1:
+        if status == "conflict":
             return FailureResult(
                 status="refuse",
                 failure_code="EVIDENCE_CONFLICT",
                 reason=f"Refusing to act: evidence for claim {claim} is missing or inconsistent.",
             )
-        if ttl_seconds > 0:
-            for record in records:
-                if (now - record.timestamp).total_seconds() > ttl_seconds:
-                    return FailureResult(
-                        status="refuse",
-                        failure_code="EVIDENCE_STALE",
-                        reason=f"Refusing to act: evidence for claim {claim} is stale.",
-                    )
+        if status == "stale":
+            return FailureResult(
+                status="refuse",
+                failure_code="EVIDENCE_STALE",
+                reason=f"Refusing to act: evidence for claim {claim} is stale.",
+            )
+        if status == "scope":
+            return FailureResult(
+                status="refuse",
+                failure_code="EVIDENCE_SCOPE",
+                reason=f"Refusing to act: evidence for claim {claim} has invalid scope.",
+            )
     return None
 
 
