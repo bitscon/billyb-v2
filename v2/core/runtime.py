@@ -434,8 +434,13 @@ def _format_del_response(
     active_task: dict,
     next_step: str,
     trace_id: str,
+    task_origination: str | None = None,
 ) -> dict:
-    response = "\n".join(
+    lines = []
+    if task_origination:
+        lines.append(task_origination.strip())
+        lines.append("")
+    lines.extend(
         [
             "TASK SELECTION:",
             f"- selected: {selection.get('selected', 'none')}",
@@ -450,6 +455,7 @@ def _format_del_response(
             next_step,
         ]
     )
+    response = "\n".join(lines)
     return {
         "final_output": response,
         "tool_calls": [],
@@ -458,8 +464,76 @@ def _format_del_response(
     }
 
 
+def _is_mode_command(text: str) -> bool:
+    stripped = text.strip().lower()
+    return stripped in ("/plan", "/engineer", "/ops", "/simulate")
+
+
+def _classify_dto_type(text: str) -> str:
+    lowered = text.lower()
+    inspection_keywords = (
+        "locate",
+        "find",
+        "where is",
+        "where's",
+        "check",
+        "list",
+        "show",
+        "status",
+        "running",
+        "installed",
+        "port",
+        "logs",
+    )
+    action_keywords = (
+        "restart",
+        "start",
+        "stop",
+        "enable",
+        "disable",
+        "install",
+        "deploy",
+        "update",
+        "delete",
+        "remove",
+        "configure",
+    )
+    analysis_keywords = (
+        "why",
+        "explain",
+        "analyze",
+        "what caused",
+        "root cause",
+    )
+    has_action = any(keyword in lowered for keyword in action_keywords)
+    has_inspection = any(keyword in lowered for keyword in inspection_keywords)
+    has_analysis = any(keyword in lowered for keyword in analysis_keywords)
+    if has_action and has_inspection:
+        return "action"
+    if has_action:
+        return "action"
+    if has_analysis and not has_action:
+        return "analysis"
+    return "inspection"
+
+
+def _dto_description(task_type: str, request: str) -> tuple[str, str]:
+    trimmed = request.strip()
+    if task_type == "action":
+        scope = "mutating"
+        prefix = "Action Requested"
+    elif task_type == "analysis":
+        scope = "read_only"
+        prefix = "Analyze"
+    else:
+        scope = "read_only"
+        prefix = "Locate/Inspect"
+    description = f"{prefix}: {trimmed} [origin:dto scope:{scope}]"
+    return description, scope
+
+
 def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
-    from core.task_graph import load_graph, save_graph, block_task
+    from core.task_graph import load_graph, save_graph, block_task, create_task, update_status
     from core.evidence import has_evidence, load_evidence
     from core.introspection import collect_environment_snapshot, DEFAULT_SCOPE, IntrospectionError
     from core.capability_contracts import load_contract, validate_preconditions
@@ -508,6 +582,30 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
         ),
     )
 
+    task_origination_block = None
+    if selection.status == "blocked" and "no tasks" in (selection.reason or "").lower():
+        if user_input.strip() and not _is_mode_command(user_input):
+            task_type = _classify_dto_type(user_input)
+            description, _scope = _dto_description(task_type, user_input)
+            created_id = create_task(description)
+            update_status(created_id, "ready")
+            save_graph(trace_id)
+            task_origination_block = "\n".join([
+                "TASK ORIGINATION:",
+                f"- created: {created_id}",
+                f"- type: {task_type}",
+                f"- description: {description}",
+            ])
+            selection = select_next_task(
+                list(graph.tasks.values()),
+                SelectionContext(
+                    user_input=user_input,
+                    trace_id=trace_id,
+                    via_ops=user_input.strip().startswith("/ops ")
+                    or user_input.strip().lower().startswith("plan")
+                    or user_input.strip().upper().startswith("APPROVE PLAN "),
+                ),
+            )
     decision = create_node(
         "DECISION",
         f"task selection: {selection.status}",
@@ -636,6 +734,7 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             {"id": "none", "description": "none", "status": "none"},
             next_step,
             trace_id,
+            task_origination=task_origination_block,
         )
 
     task = graph.tasks[selection.task_id]
@@ -749,6 +848,7 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             {"id": task.task_id, "description": task.description, "status": "blocked"},
             f"NEXT STEP: resolve dependency {missing_deps[0]}",
             trace_id,
+            task_origination=task_origination_block,
         )
 
     plans_for_task = find_plans_for_task(task.task_id)
@@ -900,6 +1000,7 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
                 {"id": task.task_id, "description": task.description, "status": "blocked"},
                 f"NEXT STEP: resolve dependency missing capability contract: {capability}",
                 trace_id,
+                task_origination=task_origination_block,
             )
 
     required_evidence = _extract_required_evidence(task.description)
@@ -917,6 +1018,7 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             {"id": task.task_id, "description": task.description, "status": "blocked"},
             f"NEXT STEP: provide evidence {missing_evidence[0]}",
             trace_id,
+            task_origination=task_origination_block,
         )
 
     if contract:
@@ -934,12 +1036,14 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
                     {"id": task.task_id, "description": task.description, "status": "blocked"},
                     f"NEXT STEP: /ops {action_text}",
                     trace_id,
+                    task_origination=task_origination_block,
                 )
             return _format_del_response(
                 {"selected": task.task_id, "reason": selection.reason or ""},
                 {"id": task.task_id, "description": task.description, "status": "blocked"},
                 "NEXT STEP: none (task complete)",
                 trace_id,
+                task_origination=task_origination_block,
             )
 
     if task.status in ("done", "failed"):
@@ -951,6 +1055,7 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             {"id": task.task_id, "description": task.description, "status": task.status},
             "NEXT STEP: none (task complete)",
             trace_id,
+            task_origination=task_origination_block,
         )
 
     if contract and contract.requires.get("ops_required"):
@@ -961,6 +1066,7 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             {"id": task.task_id, "description": task.description, "status": task.status},
             f"NEXT STEP: /ops {action_text}",
             trace_id,
+            task_origination=task_origination_block,
         )
 
     return _format_del_response(
@@ -968,6 +1074,7 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
         {"id": task.task_id, "description": task.description, "status": task.status},
         "NEXT STEP: none (task complete)",
         trace_id,
+        task_origination=task_origination_block,
     )
 
 
