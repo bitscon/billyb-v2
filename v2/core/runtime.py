@@ -135,6 +135,8 @@ _ops_state_path = _ops_contract_dir / "state.json"
 _ops_journal_path = _ops_contract_dir / "journal.jsonl"
 _pending_ops_plans: Dict[str, Dict[str, str]] = {}
 _last_inspection: dict = {}
+_last_introspection_snapshot: Dict[str, Any] = {}
+_last_resolution: Dict[str, Any] = {}
 
 _default_capability_grants = {
     "filesystem.write": {
@@ -570,6 +572,171 @@ def _render_introspection_snapshot(snapshot, task_id: str) -> str:
     return "\n".join(lines)
 
 
+def _render_resolution(outcome) -> str:
+    lines = [
+        "RESOLUTION:",
+        f"- outcome: {outcome.outcome_type}",
+        f"- message: {outcome.message}",
+    ]
+    if outcome.next_step:
+        lines.append(f"- next_step: {outcome.next_step}")
+    return "\n".join(lines)
+
+
+def _format_resolution_response(
+    selection: dict,
+    active_task: dict,
+    outcome,
+    trace_id: str,
+    task_origination: str | None = None,
+    snapshot_block: str | None = None,
+) -> dict:
+    resolution_type = outcome.outcome_type
+    next_step = outcome.next_step
+    if resolution_type == "RESOLVED":
+        next_step = None
+    elif resolution_type in ("BLOCKED", "ESCALATE", "FOLLOW_UP_INSPECTION"):
+        if not next_step:
+            raise RuntimeError("Resolution next_step required.")
+    payload = {
+        "task_id": active_task.get("id", ""),
+        "resolution_type": resolution_type,
+        "message": outcome.message,
+        "next_step": next_step,
+    }
+    return {
+        "final_output": payload,
+        "tool_calls": [],
+        "status": "success",
+        "trace_id": trace_id,
+    }
+
+
+def _validate_resolution_outcome(outcome) -> None:
+    if outcome is None:
+        raise RuntimeError("Resolution outcome missing.")
+    if isinstance(outcome, (list, tuple)):
+        raise RuntimeError("Resolution outcome must be singular.")
+    if not hasattr(outcome, "outcome_type"):
+        raise RuntimeError("Resolution outcome missing type.")
+    outcome_type = getattr(outcome, "outcome_type")
+    if outcome_type not in ("RESOLVED", "BLOCKED", "ESCALATE", "FOLLOW_UP_INSPECTION"):
+        raise RuntimeError("Resolution outcome invalid type.")
+
+
+def _canonicalize_value(value):
+    if isinstance(value, dict):
+        return {key: _canonicalize_value(value[key]) for key in sorted(value.keys())}
+    if isinstance(value, list):
+        normalized = [_canonicalize_value(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+        )
+    return value
+
+
+def _canonical_fingerprint(payload: dict) -> str:
+    canonical = _canonicalize_value(payload)
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _evidence_payload_from_bundle(bundle) -> dict:
+    return {
+        "services_units": list(bundle.services_units),
+        "services_processes": list(bundle.services_processes),
+        "services_listening_ports": list(bundle.services_listening_ports),
+        "containers": list(bundle.containers),
+        "network_listening_sockets": list(bundle.network_listening_sockets),
+    }
+
+
+def _resolution_fingerprints(bundle, outcome) -> tuple[str, str]:
+    evidence_payload = _evidence_payload_from_bundle(bundle)
+    evidence_fp = _canonical_fingerprint(evidence_payload)
+    if outcome.outcome_type == "FOLLOW_UP_INSPECTION":
+        resolution_fp = _canonical_fingerprint(
+            {
+                "prior": evidence_fp,
+                "delta": outcome.next_step or "",
+            }
+        )
+    else:
+        resolution_fp = evidence_fp
+    return evidence_fp, resolution_fp
+
+
+def _find_resolution_record(task_id: str, fingerprint: str | None = None) -> dict | None:
+    path = _execution_journal.records_path
+    if not path.exists():
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        payload = record.get("resolution")
+        if not payload:
+            continue
+        if payload.get("task_id") != task_id:
+            continue
+        if payload.get("terminal") is not True:
+            continue
+        if fingerprint is None or payload.get("evidence_fingerprint") == fingerprint:
+            return payload
+    return None
+
+
+def _resolution_record_to_outcome(record: dict):
+    from core.resolution.outcomes import ResolutionOutcome
+
+    return ResolutionOutcome(
+        outcome_type=record.get("resolution_type"),
+        message=record.get("resolution_message", ""),
+        next_step=record.get("next_step"),
+    )
+
+
+def _journal_resolution(
+    trace_id: str,
+    task_id: str,
+    outcome,
+    evidence_fingerprint: str,
+    linked_task_id: str | None = None,
+) -> None:
+    if _find_resolution_record(task_id) is not None:
+        raise RuntimeError("Resolution already journaled for task.")
+    record = _execution_journal.build_resolution_record(
+        trace_id=trace_id,
+        task_id=task_id,
+        resolution_type=outcome.outcome_type,
+        resolution_message=outcome.message,
+        next_step=outcome.next_step,
+        evidence_fingerprint=evidence_fingerprint,
+        terminal=True,
+        linked_task_id=linked_task_id,
+    )
+    _execution_journal.append(record)
+
+
+def _journal_follow_up_inspection(
+    trace_id: str,
+    origin_task_id: str,
+    new_task_id: str,
+    description: str,
+) -> None:
+    record = _execution_journal.build_inspection_origination_record(
+        trace_id=trace_id,
+        origin_task_id=origin_task_id,
+        new_task_id=new_task_id,
+        description=description,
+    )
+    _execution_journal.append(record)
+
+
 def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
     from core.task_graph import load_graph, save_graph, block_task, create_task, update_status
     from core.evidence import has_evidence, load_evidence, record_evidence
@@ -586,6 +753,8 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
         PlanStep,
     )
     from core.failure_modes import FAILURE_CODES
+    from core.resolution.resolver import build_evidence_bundle_from_snapshot, resolve_task, build_task, empty_evidence_bundle
+    from core.resolution.rules import InspectionMeta
 
     load_evidence(trace_id)
     load_trace(trace_id)
@@ -639,36 +808,164 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
 
     if selection.status == "selected":
         task = graph.tasks[selection.task_id]
-        if _task_is_inspection(task.description) and not _has_introspection_evidence(task.task_id):
-            try:
-                snapshot = collect_environment_snapshot(
-                    scope=["services", "containers", "network", "filesystem"]
+        if _task_is_inspection(task.description):
+            if not _has_introspection_evidence(task.task_id):
+                try:
+                    snapshot = collect_environment_snapshot(
+                        scope=["services", "containers", "network", "filesystem"]
+                    )
+                except IntrospectionError as exc:
+                    return _format_del_response(
+                        {"selected": task.task_id, "reason": selection.reason or ""},
+                        {"id": task.task_id, "description": task.description, "status": task.status},
+                        "NEXT STEP: none (introspection blocked)",
+                        trace_id,
+                        task_origination=task_origination_block,
+                    )
+                record_evidence(
+                    claim=_introspection_claim(task.task_id),
+                    source_type="introspection",
+                    source_ref="m25:task",
+                    raw_content=getattr(snapshot, "snapshot_id", "snapshot"),
                 )
-            except IntrospectionError as exc:
-                return _format_del_response(
+                evidence_bundle, inspection_meta = build_evidence_bundle_from_snapshot(snapshot)
+                task_context = build_task(task.task_id, task.description)
+                outcome = resolve_task(task_context, evidence_bundle, inspection_meta).outcome
+                _validate_resolution_outcome(outcome)
+                _last_introspection_snapshot[task.task_id] = snapshot
+                _last_resolution[task.task_id] = outcome
+                evidence_fp, resolution_fp = _resolution_fingerprints(evidence_bundle, outcome)
+                existing_record = _find_resolution_record(task.task_id, resolution_fp)
+                if existing_record is None:
+                    other_record = _find_resolution_record(task.task_id)
+                    if other_record is not None:
+                        raise RuntimeError("Resolution already journaled for task.")
+                else:
+                    outcome = _resolution_record_to_outcome(existing_record)
+                    _validate_resolution_outcome(outcome)
+                    return _format_resolution_response(
+                        {"selected": task.task_id, "reason": selection.reason or ""},
+                        {"id": task.task_id, "description": task.description, "status": task.status},
+                        outcome,
+                        trace_id,
+                        task_origination=task_origination_block,
+                        snapshot_block=_render_introspection_snapshot(snapshot, task.task_id),
+                    )
+                outcome_node = create_node(
+                    "OUTCOME",
+                    f"{outcome.outcome_type}: {outcome.message}",
+                    related_task_id=task.task_id,
+                )
+                create_edge(decision.node_id, outcome_node.node_id, "caused_by")
+                _link_evidence_to(outcome_node.node_id, [_introspection_claim(task.task_id)])
+                follow_up_task_id = None
+                if outcome.outcome_type == "FOLLOW_UP_INSPECTION" and outcome.next_step:
+                    follow_up_description = (
+                        f"Locate/Inspect: {outcome.next_step} [origin:resolution scope:read_only]"
+                    )
+                    follow_up_task_id = create_task(follow_up_description, parent_id=task.task_id)
+                    update_status(follow_up_task_id, "ready")
+                    save_graph(trace_id)
+                _journal_resolution(
+                    trace_id,
+                    task.task_id,
+                    outcome,
+                    resolution_fp if outcome.outcome_type == "FOLLOW_UP_INSPECTION" else evidence_fp,
+                    linked_task_id=follow_up_task_id,
+                )
+                if follow_up_task_id is not None and outcome.next_step:
+                    _journal_follow_up_inspection(
+                        trace_id=trace_id,
+                        origin_task_id=task.task_id,
+                        new_task_id=follow_up_task_id,
+                        description=follow_up_description,
+                    )
+                return _format_resolution_response(
                     {"selected": task.task_id, "reason": selection.reason or ""},
                     {"id": task.task_id, "description": task.description, "status": task.status},
-                    "NEXT STEP: none (introspection blocked)",
+                    outcome,
                     trace_id,
                     task_origination=task_origination_block,
+                    snapshot_block=_render_introspection_snapshot(snapshot, task.task_id),
                 )
-            record_evidence(
-                claim=_introspection_claim(task.task_id),
-                source_type="introspection",
-                source_ref="m25:task",
-                raw_content=getattr(snapshot, "snapshot_id", "snapshot"),
+            outcome = _last_resolution.get(task.task_id)
+            snapshot = _last_introspection_snapshot.get(task.task_id)
+            if outcome is None and snapshot is not None:
+                evidence_bundle, inspection_meta = build_evidence_bundle_from_snapshot(snapshot)
+                task_context = build_task(task.task_id, task.description)
+                outcome = resolve_task(task_context, evidence_bundle, inspection_meta).outcome
+                _validate_resolution_outcome(outcome)
+                _last_resolution[task.task_id] = outcome
+            if outcome is None:
+                task_context = build_task(task.task_id, task.description)
+                inspection_meta = InspectionMeta(
+                    completed=False,
+                    source="introspection",
+                    inspected_at=None,
+                    scope=[],
+                )
+                outcome = resolve_task(task_context, empty_evidence_bundle(), inspection_meta).outcome
+                _validate_resolution_outcome(outcome)
+                _last_resolution[task.task_id] = outcome
+            else:
+                _validate_resolution_outcome(outcome)
+            evidence_bundle = empty_evidence_bundle()
+            if snapshot is not None:
+                evidence_bundle, _inspection_meta = build_evidence_bundle_from_snapshot(snapshot)
+            evidence_fp, resolution_fp = _resolution_fingerprints(evidence_bundle, outcome)
+            existing_record = _find_resolution_record(task.task_id, resolution_fp)
+            if existing_record is None:
+                other_record = _find_resolution_record(task.task_id)
+                if other_record is not None:
+                    raise RuntimeError("Resolution already journaled for task.")
+            else:
+                outcome = _resolution_record_to_outcome(existing_record)
+                _validate_resolution_outcome(outcome)
+                return _format_resolution_response(
+                    {"selected": task.task_id, "reason": selection.reason or ""},
+                    {"id": task.task_id, "description": task.description, "status": task.status},
+                    outcome,
+                    trace_id,
+                    task_origination=task_origination_block,
+                    snapshot_block=_render_introspection_snapshot(snapshot, task.task_id) if snapshot is not None else None,
+                )
+            outcome_node = create_node(
+                "OUTCOME",
+                f"{outcome.outcome_type}: {outcome.message}",
+                related_task_id=task.task_id,
             )
-            response = _format_del_response(
+            create_edge(decision.node_id, outcome_node.node_id, "caused_by")
+            _link_evidence_to(outcome_node.node_id, [_introspection_claim(task.task_id)])
+            follow_up_task_id = None
+            if outcome.outcome_type == "FOLLOW_UP_INSPECTION" and outcome.next_step:
+                follow_up_description = (
+                    f"Locate/Inspect: {outcome.next_step} [origin:resolution scope:read_only]"
+                )
+                follow_up_task_id = create_task(follow_up_description, parent_id=task.task_id)
+                update_status(follow_up_task_id, "ready")
+                save_graph(trace_id)
+            _journal_resolution(
+                trace_id,
+                task.task_id,
+                outcome,
+                resolution_fp if outcome.outcome_type == "FOLLOW_UP_INSPECTION" else evidence_fp,
+                linked_task_id=follow_up_task_id,
+            )
+            if follow_up_task_id is not None and outcome.next_step:
+                _journal_follow_up_inspection(
+                    trace_id=trace_id,
+                    origin_task_id=task.task_id,
+                    new_task_id=follow_up_task_id,
+                    description=follow_up_description,
+                )
+            return _format_resolution_response(
                 {"selected": task.task_id, "reason": selection.reason or ""},
                 {"id": task.task_id, "description": task.description, "status": task.status},
-                "NEXT STEP: evaluate introspection evidence",
+                outcome,
                 trace_id,
                 task_origination=task_origination_block,
+                snapshot_block=_render_introspection_snapshot(snapshot, task.task_id) if snapshot is not None else None,
             )
-            response["final_output"] = (
-                response["final_output"] + "\n\n" + _render_introspection_snapshot(snapshot, task.task_id)
-            )
-            return response
 
     if selection.status == "blocked":
         reason = selection.reason or "No eligible tasks."

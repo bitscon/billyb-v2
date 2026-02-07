@@ -18,6 +18,50 @@ class ExecutionJournal:
             f.write(json.dumps(record))
             f.write("\n")
 
+    def build_resolution_record(
+        self,
+        trace_id: str,
+        task_id: str,
+        resolution_type: str,
+        resolution_message: str,
+        next_step: str | None,
+        evidence_fingerprint: str,
+        terminal: bool = True,
+        linked_task_id: str | None = None,
+    ) -> dict:
+        record = {
+            "resolution": {
+                "trace_id": trace_id,
+                "task_id": task_id,
+                "resolution_type": resolution_type,
+                "resolution_message": resolution_message,
+                "next_step": next_step,
+                "evidence_fingerprint": evidence_fingerprint,
+                "terminal": terminal,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+        }
+        if linked_task_id is not None:
+            record["resolution"]["linked_task_id"] = linked_task_id
+        return record
+
+    def build_inspection_origination_record(
+        self,
+        trace_id: str,
+        origin_task_id: str,
+        new_task_id: str,
+        description: str,
+    ) -> dict:
+        return {
+            "inspection_task": {
+                "trace_id": trace_id,
+                "origin_task_id": origin_task_id,
+                "new_task_id": new_task_id,
+                "description": description,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+        }
+
     def build_record(
         self,
         trace_id: str,
