@@ -61,6 +61,7 @@ from core.guardrails.invariants import (
 )
 from core.validation.plan_validator import PlanValidator
 from core.guardrails.output_guard import OutputGuard
+from core.resolution.outcomes import M27_CONTRACT_VERSION
 try:
     from v2.billy_engineering import detect_engineering_intent, enforce_engineering
     from v2.billy_engineering.enforcement import EngineeringError
@@ -592,6 +593,8 @@ def _format_resolution_response(
     snapshot_block: str | None = None,
 ) -> dict:
     resolution_type = outcome.outcome_type
+    if outcome.contract_version != M27_CONTRACT_VERSION:
+        raise RuntimeError("Resolution contract version mismatch.")
     next_step = outcome.next_step
     if resolution_type == "RESOLVED":
         next_step = None
@@ -622,6 +625,10 @@ def _validate_resolution_outcome(outcome) -> None:
     outcome_type = getattr(outcome, "outcome_type")
     if outcome_type not in ("RESOLVED", "BLOCKED", "ESCALATE", "FOLLOW_UP_INSPECTION"):
         raise RuntimeError("Resolution outcome invalid type.")
+    if not hasattr(outcome, "contract_version"):
+        raise RuntimeError("Resolution outcome missing contract version.")
+    if outcome.contract_version != M27_CONTRACT_VERSION:
+        raise RuntimeError("Resolution contract version mismatch.")
 
 
 def _canonicalize_value(value):
@@ -685,6 +692,8 @@ def _find_resolution_record(task_id: str, fingerprint: str | None = None) -> dic
             continue
         if payload.get("terminal") is not True:
             continue
+        if payload.get("contract_version") != M27_CONTRACT_VERSION:
+            raise RuntimeError("Resolution contract version mismatch in journal.")
         if fingerprint is None or payload.get("evidence_fingerprint") == fingerprint:
             return payload
     return None
@@ -697,6 +706,7 @@ def _resolution_record_to_outcome(record: dict):
         outcome_type=record.get("resolution_type"),
         message=record.get("resolution_message", ""),
         next_step=record.get("next_step"),
+        contract_version=record.get("contract_version", ""),
     )
 
 
@@ -716,6 +726,7 @@ def _journal_resolution(
         resolution_message=outcome.message,
         next_step=outcome.next_step,
         evidence_fingerprint=evidence_fingerprint,
+        contract_version=outcome.contract_version,
         terminal=True,
         linked_task_id=linked_task_id,
     )

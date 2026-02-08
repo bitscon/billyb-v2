@@ -26,6 +26,7 @@ class ExecutionJournal:
         resolution_message: str,
         next_step: str | None,
         evidence_fingerprint: str,
+        contract_version: str,
         terminal: bool = True,
         linked_task_id: str | None = None,
     ) -> dict:
@@ -37,6 +38,7 @@ class ExecutionJournal:
                 "resolution_message": resolution_message,
                 "next_step": next_step,
                 "evidence_fingerprint": evidence_fingerprint,
+                "contract_version": contract_version,
                 "terminal": terminal,
                 "timestamp": datetime.utcnow().isoformat() + "Z",
             }

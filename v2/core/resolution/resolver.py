@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
 
-from core.resolution.outcomes import ResolutionOutcome
+from core.resolution.outcomes import ResolutionOutcome, M27_CONTRACT_VERSION
 from core.resolution.rules import (
     EvidenceBundle,
     InspectionMeta,
@@ -68,4 +68,6 @@ def resolve_task(task: ResolutionTask, evidence: EvidenceBundle, inspection: Ins
         raise RuntimeError("Resolver returned invalid outcome type.")
     if outcome.outcome_type not in ("RESOLVED", "BLOCKED", "ESCALATE", "FOLLOW_UP_INSPECTION"):
         raise RuntimeError("Resolver returned invalid outcome value.")
+    if outcome.contract_version != M27_CONTRACT_VERSION:
+        raise RuntimeError("Resolver returned incompatible contract version.")
     return ResolutionResult(outcome=outcome)

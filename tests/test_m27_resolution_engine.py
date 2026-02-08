@@ -10,6 +10,7 @@ import core.causal_trace as causal_trace
 import core.introspection as introspection
 from core.resolution.resolver import build_task, resolve_task, empty_evidence_bundle
 from core.resolution.rules import EvidenceBundle, InspectionMeta
+from core.resolution.outcomes import M27_CONTRACT_VERSION, ResolutionOutcome
 
 
 class TestM27ResolutionEngine(unittest.TestCase):
@@ -239,6 +240,90 @@ class TestM27ResolutionEngine(unittest.TestCase):
             response = runtime_mod.run_turn("Locate n8n on the barn", {"trace_id": trace_id})
             output = response["final_output"]
             self.assertEqual(sorted(output.keys()), ["message", "next_step", "resolution_type", "task_id"])
+        finally:
+            introspection.collect_environment_snapshot = original_snapshot
+            tmp_dir.cleanup()
+
+    def test_resolver_emits_contract_version(self):
+        task = build_task("task-1", "Locate/Inspect: Locate n8n on the barn [origin:dto scope:read_only]")
+        inspection = InspectionMeta(completed=False, source="introspection", inspected_at=None, scope=[])
+        outcome = resolve_task(task, empty_evidence_bundle(), inspection).outcome
+        self.assertEqual(outcome.contract_version, M27_CONTRACT_VERSION)
+
+    def test_runtime_rejects_contract_version_mismatch(self):
+        import tempfile
+        from core.resolution import resolver as resolver_mod
+
+        tmp_dir = tempfile.TemporaryDirectory()
+        trace_id = self._setup_dirs(Path(tmp_dir.name))
+
+        class BadResult:
+            def __init__(self):
+                self.outcome = ResolutionOutcome(
+                    outcome_type="RESOLVED",
+                    message="ok",
+                    contract_version="0.9",
+                )
+
+        original_resolve = resolver_mod.resolve_task
+        original_snapshot = introspection.collect_environment_snapshot
+
+        def fake_snapshot(scope):
+            return introspection.EnvironmentSnapshot(
+                snapshot_id="snap-1",
+                collected_at=datetime.now(timezone.utc),
+                services={
+                    "systemd_units": ["n8n.service loaded active running"],
+                    "process_list": [],
+                    "listening_ports": [],
+                },
+                containers={"containers": []},
+                network={"listening_sockets": []},
+                filesystem={"paths": []},
+            )
+
+        resolver_mod.resolve_task = lambda *_args, **_kwargs: BadResult()
+        introspection.collect_environment_snapshot = fake_snapshot
+        try:
+            error = None
+            try:
+                runtime_mod.run_turn("Locate n8n on the barn", {"trace_id": trace_id})
+            except Exception as exc:
+                error = exc
+            self.assertIsNotNone(error)
+        finally:
+            resolver_mod.resolve_task = original_resolve
+            introspection.collect_environment_snapshot = original_snapshot
+            tmp_dir.cleanup()
+
+    def test_journal_includes_contract_version(self):
+        import tempfile
+        tmp_dir = tempfile.TemporaryDirectory()
+        trace_id = self._setup_dirs(Path(tmp_dir.name))
+
+        def fake_snapshot(scope):
+            return introspection.EnvironmentSnapshot(
+                snapshot_id="snap-1",
+                collected_at=datetime.now(timezone.utc),
+                services={
+                    "systemd_units": ["n8n.service loaded active running"],
+                    "process_list": [],
+                    "listening_ports": [],
+                },
+                containers={"containers": []},
+                network={"listening_sockets": []},
+                filesystem={"paths": []},
+            )
+
+        original_snapshot = introspection.collect_environment_snapshot
+        introspection.collect_environment_snapshot = fake_snapshot
+        try:
+            runtime_mod.run_turn("Locate n8n on the barn", {"trace_id": trace_id})
+            graph = tg.load_graph(trace_id)
+            task_id = next(iter(graph.tasks.values())).task_id
+            records = self._read_resolution_records(runtime_mod._execution_journal.records_path, task_id)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].get("contract_version"), M27_CONTRACT_VERSION)
         finally:
             introspection.collect_environment_snapshot = original_snapshot
             tmp_dir.cleanup()
