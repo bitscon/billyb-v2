@@ -10,6 +10,7 @@ correctly invoke the configured LLM.
 import hashlib
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
@@ -20,7 +21,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List
 
-from . import llm_api
+try:
+    from . import llm_api
+except ImportError:
+    llm_api = None
 from .charter import load_charter
 from core.contracts.loader import load_schema, ContractViolation
 from core.tool_runner.docker_runner import DockerRunner
@@ -85,6 +89,22 @@ FORBIDDEN_IDENTITY_PHRASES = (
 # Deterministic fallback identity/purpose (authoritative, no LLM needed)
 IDENTITY_FALLBACK = (
     "I am Billy — a digital Farm Hand and Foreman operating inside the Farm."
+)
+
+# Runtime identity binding is injected on every LLM call to keep persona stable
+# even when upstream docs/prompts use third-person references.
+IDENTITY_BINDING_PREFIX = (
+    "Identity Binding (Runtime-Enforced):\n"
+    "- You are Billy and speak in first person (I/me/my).\n"
+    "- Address the user in second person (you/your).\n"
+    "- Never refer to Billy in third person.\n"
+    "- Interpret 'Chad' as the user ('you')."
+)
+
+THIRD_PERSON_BLOCKLIST = (
+    "billy must",
+    "billy can only",
+    "billy should",
 )
 
 
@@ -606,6 +626,7 @@ def _format_resolution_response(
         "resolution_type": resolution_type,
         "message": outcome.message,
         "next_step": next_step,
+        "text": outcome.message,
     }
     return {
         "final_output": payload,
@@ -1922,14 +1943,31 @@ class BillyRuntime:
         except ContractViolation as e:
             raise SystemExit(f"[FATAL] Contract enforcement failed at startup: {e}")
         self.config = config or {}
+        self.root_path = root_path or str(Path(__file__).resolve().parents[1])
 
     def _identity_guard(self, user_input: str, answer: str) -> str:
         """
-        Identity guardrails (currently permissive).
-
-        This hook exists to enforce identity rules later.
+        Deterministic last-mile identity normalization.
         """
-        return answer
+        if not isinstance(answer, str):
+            answer = str(answer)
+
+        normalized = answer
+        # Targeted phrase rewrites for known third-person drift.
+        normalized = re.sub(r"\b[Bb]illy\s+must\b", "I must", normalized)
+        normalized = re.sub(r"\b[Bb]illy\s+can only\b", "I can only", normalized)
+        normalized = re.sub(r"\b[Bb]illy\s+should\b", "I should", normalized)
+
+        # General runtime identity substitutions.
+        normalized = re.sub(r"\b[Bb]illy's\b", "my", normalized)
+        normalized = re.sub(r"\b[Bb]illy\b", "I", normalized)
+        normalized = re.sub(r"\b[Cc]had's\b", "your", normalized)
+        normalized = re.sub(r"\b[Cc]had\b", "you", normalized)
+
+        lowered = normalized.lower()
+        if any(phrase in lowered for phrase in THIRD_PERSON_BLOCKLIST):
+            raise RuntimeError("Identity normalization failed: third-person Billy reference remained.")
+        return normalized
 
     def _load_config_from_yaml(self) -> Dict[str, Any]:
         """
@@ -1951,19 +1989,58 @@ class BillyRuntime:
         except Exception:
             return {}
 
+    def _render_user_output(self, result: Dict[str, Any]) -> str:
+        final_output = result.get("final_output")
+        if isinstance(final_output, dict):
+            required = {"task_id", "resolution_type", "message", "next_step"}
+            if required.issubset(final_output.keys()):
+                return str(final_output.get("message", ""))
+            for key in ("message", "text", "error"):
+                value = final_output.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+            return json.dumps(final_output, indent=2)
+        if final_output is None:
+            return ""
+        return str(final_output)
+
+    def _llm_answer(self, prompt: str) -> str:
+        if llm_api is None:
+            return "I encountered an error trying to connect to the model provider."
+
+        model_config = self.config or self._load_config_from_yaml()
+        system_prompt = IDENTITY_FALLBACK
+        try:
+            system_prompt = load_charter(self.root_path)
+        except Exception:
+            pass
+        system_prompt = f"{IDENTITY_BINDING_PREFIX}\n\n{system_prompt}"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        answer = llm_api.get_completion(messages, model_config)
+        if not isinstance(answer, str):
+            answer = str(answer)
+        return self._identity_guard(prompt, answer)
+
     def ask(self, prompt: str) -> str:
         """
-        Route every request through the deterministic pipeline.
+        User-facing chat entrypoint.
 
         This is the method called by:
-        - /ask
         - /v1/chat/completions
+        - CLI main.py
 
         Special routing for Agent Zero commands starting with "a0 ".
         """
-        
+        normalized = prompt.strip()
+        if not normalized:
+            return ""
+
         # Route Agent Zero commands
-        if prompt.strip().startswith("a0 "):
+        if normalized.startswith("a0 "):
             try:
                 from v2.agent_zero.commands import handle_command
                 result = handle_command(prompt)
@@ -1974,11 +2051,24 @@ class BillyRuntime:
             except Exception as e:
                 return json.dumps({"error": f"Error handling Agent Zero command: {str(e)}"}, indent=2)
 
-        trace_id = f"trace-{int(time.time() * 1000)}"
-        assert_trace_id(trace_id)
-        assert_explicit_memory_write(prompt)
-        result = _run_deterministic_loop(prompt, trace_id)
-        return result.get("final_output", "")
+        # Explicit runtime/control commands remain on deterministic runtime path.
+        is_control = (
+            normalized.startswith("/")
+            or normalized.startswith("GRANT_CAPABILITY")
+            or normalized.startswith("grant_autonomy ")
+            or normalized.startswith("/revoke_autonomy")
+            or normalized.upper().startswith("APPROVE ")
+            or normalized.upper().startswith("APPROVE PLAN ")
+            or normalized.lower().startswith("plan")
+            or normalized.lower().startswith("claim:")
+        )
+        if is_control:
+            trace_id = f"trace-{int(time.time() * 1000)}"
+            result = self.run_turn(prompt, {"trace_id": trace_id})
+            return self._render_user_output(result)
+
+        # Normal conversation should return a user-facing answer, not runtime state.
+        return self._llm_answer(prompt)
 
     def run_turn(self, user_input: str, session_context: Dict[str, Any]):
         trace_id = session_context.get("trace_id") if isinstance(session_context, dict) else None
@@ -3364,7 +3454,7 @@ class BillyRuntime:
             }
 
         return {
-            "final_output": self.ask(user_input),
+            "final_output": self._llm_answer(user_input),
             "tool_calls": [],
             "status": "success",
             "trace_id": trace_id,
