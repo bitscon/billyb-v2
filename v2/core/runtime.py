@@ -1944,6 +1944,80 @@ class BillyRuntime:
             raise SystemExit(f"[FATAL] Contract enforcement failed at startup: {e}")
         self.config = config or {}
         self.root_path = root_path or str(Path(__file__).resolve().parents[1])
+        self.agent_identity = {
+            "name": "Billy",
+            "title": "Farm Hand and Foreman",
+            "domain": "workshop.home",
+        }
+        self.operator_identity = {
+            "name": "Chad McCormack",
+            "role": "owner_operator",
+        }
+
+    def resolve_identity_question(self, input_str: str) -> str | None:
+        """
+        Deterministic identity responder.
+
+        This interceptor exists so identity questions do not depend on prompt quality
+        or model behavior. Identity answers are resolved by runtime state first.
+        """
+        if not input_str:
+            return None
+
+        normalized = re.sub(r"[^a-z0-9\s]", " ", input_str.lower())
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized or normalized.startswith("/"):
+            return None
+
+        def _matches(phrases: tuple[str, ...]) -> bool:
+            return any(
+                normalized == phrase
+                or normalized.startswith(f"{phrase} ")
+                or normalized.endswith(f" {phrase}")
+                or f" {phrase} " in normalized
+                for phrase in phrases
+            )
+
+        who_are_you_phrases = (
+            "who are you",
+            "what are you",
+            "what is your name",
+            "whats your name",
+            "identify yourself",
+            "tell me who you are",
+        )
+        who_am_i_phrases = (
+            "who am i",
+            "what is my name",
+            "whats my name",
+            "tell me my name",
+            "do you know my name",
+        )
+        purpose_phrases = (
+            "what is your purpose",
+            "whats your purpose",
+            "what do you do",
+            "why do you exist",
+            "what are you for",
+        )
+
+        if _matches(who_are_you_phrases):
+            return (
+                f"I am {self.agent_identity['name']}, the {self.agent_identity['title']} "
+                f"operating inside {self.agent_identity['domain']}."
+            )
+        if _matches(who_am_i_phrases):
+            role_text = self.operator_identity["role"].replace("_", "/")
+            return (
+                f"You are {self.operator_identity['name']}, the {role_text} "
+                f"of {self.agent_identity['domain']}."
+            )
+        if _matches(purpose_phrases):
+            return (
+                f"My purpose is to operate as {self.agent_identity['name']}, the "
+                f"{self.agent_identity['title']} for {self.agent_identity['domain']}."
+            )
+        return None
 
     def _identity_guard(self, user_input: str, answer: str) -> str:
         """
@@ -2051,6 +2125,11 @@ class BillyRuntime:
             except Exception as e:
                 return json.dumps({"error": f"Error handling Agent Zero command: {str(e)}"}, indent=2)
 
+        # Runtime-first identity intercept: deterministic and model-independent.
+        identity_response = self.resolve_identity_question(normalized)
+        if identity_response is not None:
+            return identity_response
+
         # Explicit runtime/control commands remain on deterministic runtime path.
         is_control = (
             normalized.startswith("/")
@@ -2078,6 +2157,15 @@ class BillyRuntime:
         assert_trace_id(trace_id)
         assert_explicit_memory_write(user_input)
         normalized_input = user_input.strip()
+        # Deterministic identity answers should bypass all planner/LLM paths.
+        identity_response = self.resolve_identity_question(normalized_input)
+        if identity_response is not None:
+            return {
+                "final_output": identity_response,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
         if normalized_input.lower().startswith("/simulate "):
             from core.counterfactual import simulate_action
 
