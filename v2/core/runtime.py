@@ -2059,7 +2059,8 @@ class BillyRuntime:
             or normalized.startswith("/revoke_autonomy")
             or normalized.upper().startswith("APPROVE ")
             or normalized.upper().startswith("APPROVE PLAN ")
-            or normalized.lower().startswith("plan")
+            or normalized.lower() == "plan"
+            or normalized.lower().startswith("plan ")
             or normalized.lower().startswith("claim:")
         )
         if is_control:
