@@ -1,175 +1,168 @@
-# Billy v2 Agent Zero Integration (Final Build)
+# Billy v2 — Governed Engineering Assistant
 
-This repository contains Billy v2 code integrated with Agent Zero helpers.
+Billy is a **protocol-driven engineering assistant** designed to behave like a safe, auditable, self-hosted alternative to Codex.
 
-## Structure
+Billy separates **thinking from power**.  
+Nothing executes implicitly.  
+Every dangerous action is explicit, gated, and logged.
 
-- `v2/` – The original Billy v2 codebase with a patched `api.py` that exposes optional Agent Zero endpoints behind a feature flag.  All other core files (`config.yaml`, `core/`, `docs/`) remain unchanged.
-- `adapter_impl/` – The adapter layer bridging Billy’s tool, memory and trace contracts to Agent Zero components.  Includes local and Docker runners, observability hooks and interfaces.
-- `tests/` – Unit and integration tests for adapters, including new tests for the Docker runner.
-- `evaluation/` – A behavioural evaluation harness for exercising tools and memory in a controlled way.
-- `integration_artifacts/` – High‑level documents: architecture maps, inventories, reuse candidates, boundary contracts, threat model and a rollout plan.
+This repository is the **canonical source of truth** for Billy’s capabilities and constraints.
 
-## Feature Flags
+---
 
-Set the environment variable `ENABLE_AGENT_ZERO_INTEGRATION=true` in your deployment to enable the new `/v1/a0/*` endpoints in `v2/api.py`.  Otherwise, Billy runs normally.
+## What Billy Is
 
-Refer to the documentation in `integration_artifacts/` for guidance on rollout, security and maintenance.
+Billy is an engineering agent that can:
+- reason about systems and code
+- draft concrete changes
+- apply approved code
+- design, approve, register, and execute tools
 
-## Operational Modes
+All actions follow explicit human approval gates.
 
-Billy recognizes two explicit modes:
+Billy is designed to be:
+- predictable
+- inspectable
+- auditable
+- extensible without refactoring core behavior
 
-- `/plan` — default read-only mode (analysis, reasoning, outlining). No filesystem writes or execution.
-- `/engineer` — explicit engineering mode that produces artifacts under `v2/billy_engineering/workspace/` and stops for approval.
+---
 
-## Billy v2 Single‑Server Deployment Guide
+## What Billy Is Not
 
-This guide explains how to deploy Billy v2—along with the optional Agent Zero integration—on a single Linux host. It assumes your development and production environments run on the same machine and that you have basic familiarity with the command line.
+Billy does **not**:
+- execute autonomously
+- infer intent
+- select tools on its own
+- chain actions
+- run background jobs
+- bypass approval or confirmation steps
 
-### Prerequisites
+Power is earned in stages.
 
-- A Linux server (Ubuntu or similar).
-- Python 3.10 or newer with pip installed.
-- git installed to clone the repository.
-- Optionally, a running MongoDB instance if you want to enable Billy's key/value memory endpoints.
-- Optionally, Docker installed if you plan to run tools inside containers.
-- Access to the Billy v2 repository (bitscon/billyb‑v2) and the Agent Zero code base.
+---
 
-### Step 1: Obtain the code
+## Engineering Pipeline (High Level)
 
-Clone the repository or copy the provided archive onto your server. The repository contains the core code under v2/, the adapter layer under adapter_impl/, design docs under integration_artifacts/, as well as tests and an evaluation harness.
+Billy operates through a fixed pipeline of modes:
 
-```bash
-# Using git
-git clone https://github.com/bitscon/billyb-v2.git
-cd billyb-v2
+ERM → CDM → APP → CAM
+↘
+TDM → Tool Approval → TRM → TEM
 
-# OR, copy the extracted `final_repo` from the project ZIP
-# and rename it to billyb-v2
-```
 
-### Step 2: Create a virtual environment
+Each mode has a single responsibility and hard boundaries.
 
-Using a virtual environment isolates your Python dependencies:
+---
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-```
+## Capabilities by Mode
 
-### Step 3: Install dependencies
+| Mode | Trigger | Purpose |
+|-----|-------|--------|
+| ERM (Engineering Reasoning) | `engineer:`, `analyze:` | Explain, analyze, reason |
+| CDM (Code Drafting) | `draft:`, `propose:` | Draft code changes |
+| APP (Approval) | `approve:` | Freeze approved drafts |
+| CAM (Code Application) | `apply:` | Apply approved code only |
+| TDM (Tool Definition) | `tool:`, `design tool:` | Design tool specifications |
+| Tool Approval | `approve tool:` | Approve tool definitions |
+| TRM (Tool Registration) | `register tool:` | Register tools (visible, inert) |
+| TEM (Tool Execution) | `run tool:` + `confirm run tool:` | Execute tools with confirmation |
 
-Billy uses FastAPI and Uvicorn to serve its HTTP endpoints. Install the required packages:
+---
 
-```bash
-pip install fastapi uvicorn pydantic pymongo
+## Typical Usage Flow
 
-# Optional: install prometheus_client if you want metrics for observability
-pip install prometheus_client
-```
+### 1. Reason about a problem
+engineer: analyze how execution journaling works
 
-If you plan to enable Agent Zero integration, ensure that the Agent Zero code base is checked out on disk and that its python/ package is accessible. The integration code will load tools from this location when the feature flag is set.
 
-### Step 4: Configure environment variables
+### 2. Draft a change
+draft: refactor execution journal path handling
 
-Create a .env file in the repository root with values appropriate for your environment. For example:
 
-```bash
-# Enable Mongo memory storage (optional)
-BILLY_DB_ENGINE=mongo
-BILLY_MONGO_URI=mongodb://127.0.0.1:27017
-BILLY_MONGO_DB=billy
+### 3. Approve the draft
+approve: DRAFT-014
 
-# Enable Agent Zero integration (set to "true" to expose additional endpoints)
-ENABLE_AGENT_ZERO_INTEGRATION=true
 
-# Path to your Agent Zero checkout (absolute path recommended)
-AGENT_ZERO_ROOT=/opt/agent-zero-main
-```
+### 4. Apply the approved draft
+apply: DRAFT-014
 
-If ENABLE_AGENT_ZERO_INTEGRATION is not set (or is not "true"), Billy runs in its default mode. The AGENT_ZERO_ROOT variable should point at the directory where the Agent Zero repository is located.
 
-### Step 5: Run the API server
+### 5. Design a tool
+tool: design tool for applying approved drafts
 
-There are two common ways to run Billy on a single server.
 
-#### Development mode
+### 6. Approve the tool
+approve tool: TOOL-003
 
-For quick local testing, run Uvicorn directly with auto‑reload:
 
-```bash
-uvicorn v2.api:app --host 0.0.0.0 --port 8000 --reload
-```
+### 7. Register the tool
+register tool: TOOL-003
 
-You can then visit http://localhost:8000/health to check that the service is running. Using --reload causes Uvicorn to restart whenever code changes, which is convenient during development.
 
-#### Production mode with systemd
+### 8. Execute the tool (explicit, gated)
+run tool: apply_approved_draft {"draft_id":"DRAFT-014"}
+confirm run tool: apply_approved_draft
 
-For persistent operation, run Billy as a systemd service. First, copy your repository to a stable location, e.g. /opt/billyb-v2. Then create a unit file at /etc/systemd/system/billyb-v2.service with the following content:
 
-```ini
-[Unit]
-Description=Billy v2 API
-After=network.target
+---
 
-[Service]
-Type=simple
-User=billyuser         # replace with a dedicated service user
-WorkingDirectory=/opt/billyb-v2
-EnvironmentFile=/opt/billyb-v2/.env
-ExecStart=/opt/billyb-v2/.venv/bin/uvicorn v2.api:app --host 0.0.0.0 --port 8000
-Restart=on-failure
-RestartSec=5s
+## Safety Guarantees
 
-[Install]
-WantedBy=multi-user.target
-```
+Billy enforces the following invariant:
 
-This configuration is adapted from a typical FastAPI systemd setup. Replace billyuser with a non‑privileged user that owns the files. After saving the service file, run:
+designed
+→ approved
+→ registered
+→ explicitly invoked
+→ validated
+→ confirmed
+→ executed
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable billyb-v2
-sudo systemctl start billyb-v2
-```
 
-The service will now start automatically at boot and restart on failure.
+If any gate is missing, execution **hard-stops**.
 
-### Step 6: Accessing Billy
+All approvals, applications, and executions are:
+- hash-validated
+- append-only
+- auditable
 
-With the server running, you can interact with Billy using the following endpoints:
+---
 
-- GET /health – returns service status and Mongo connectivity.
-- POST /ask with JSON { "prompt": "your question" } – returns Billy's response.
-- GET /v1/models and POST /v1/chat/completions – minimal OpenAI‑style endpoints.
-- POST /v1/memory/put and GET /v1/memory/get – store and retrieve key/value pairs (requires Mongo).
+## Repository Status
 
-When ENABLE_AGENT_ZERO_INTEGRATION=true, additional Agent Zero helper endpoints are available:
+- All core modes implemented
+- 180+ tests passing
+- Core infrastructure frozen
+- New capabilities added only as new modes
 
-- GET /v1/a0/tools – list available Agent Zero tools.
-- GET /v1/a0/tool/{name} – retrieve the schema for a specific tool.
-- POST /v1/a0/tool/{name}/run – execute a tool (optionally with use_docker=true).
-- POST /v1/a0/memory/put and GET /v1/a0/memory/get – use Agent Zero's memory store (currently a stub).
+---
 
-### Step 7: Updating and restarting
+## Key Documentation
 
-To deploy updates, pull the latest code, reinstall dependencies if needed, and restart the service:
+For deeper understanding, read these in order:
 
-```bash
-cd /opt/billyb-v2
-git pull
-source .venv/bin/activate
-pip install -U fastapi uvicorn pydantic pymongo
-sudo systemctl restart billyb-v2
-```
+1. `ARCHITECTURE.md` — system mental model
+2. `CAPABILITIES.md` — fast reference
+3. `STATE.md` — current project status
+4. `ONBOARDING.md` — instructions for new sessions
 
-### Notes
+---
 
-- If Mongo is not configured, the memory endpoints will return an error. Set BILLY_DB_ENGINE=mongo in .env and ensure MongoDB is running to use them.
-- Docker execution is experimental. Ensure Docker is installed and configured before calling tools with use_docker=true.
-- Running both development and production on a single host is acceptable for a personal LAN. Use different ports or enable/disable integration features via environment variables to avoid conflicts.
-- The systemd service file shown here is based on general FastAPI deployment recommendations, which describe creating a unit file in /etc/systemd/system/ and enabling it.
+## Design Philosophy (Short)
 
-Following this guide will let you run Billy v2—along with its optional Agent Zero helpers—on a single Linux server with minimal complexity. Adjust paths and environment variables to suit your own setup.
+Billy favors:
+- explicit intent over inference
+- boring execution over cleverness
+- protocol over personality
+
+This makes Billy safe enough to grow.
+
+What to do next (keeping the same workflow)
+create the README.md
+
+Commit it
+
+Tell Codex: “README.md accepted. Freeze.”
+
+Then we move on to the next document:
