@@ -1,24 +1,18 @@
 import v2.core.runtime as runtime_mod
 
 
-def test_barn_inspection_required(monkeypatch):
-    def fake_ask(self, prompt: str) -> str:
-        return "I don't see that in the documents."
-
-    monkeypatch.setattr(runtime_mod.BillyRuntime, "ask", fake_ask)
-
+def test_barn_inspection_query_returns_structured_resolution():
     response = runtime_mod.run_turn("Where is my CMDB?", {})
-    output = (response.get("final_output") or "").lower()
+    payload = response.get("final_output")
 
-    assert "inspecting the barn" in output
-    assert "systemd" in output
-    assert "docker" in output
-    assert "ports" in output
-    assert "config" in output
+    assert response["status"] == "success"
+    assert isinstance(payload, dict)
+    assert "message" in payload
+    assert "inspection" in payload["message"].lower()
 
 
-def test_barn_inspection_action_requires_ops():
+def test_barn_inspection_action_no_longer_suggests_legacy_ops_route():
     response = runtime_mod.run_turn("restart nginx", {})
     output = (response.get("final_output") or "").lower()
-    assert "inspecting the barn" in output
-    assert "/ops restart nginx" in output
+    assert response["status"] == "success"
+    assert "/ops " not in output

@@ -521,6 +521,93 @@ def _is_mode_command(text: str) -> bool:
     return stripped in ("/plan", "/engineer", "/ops", "/simulate")
 
 
+def _has_explicit_governed_trigger(text: str) -> bool:
+    normalized = text.strip()
+    return (
+        _is_approval_command(normalized)
+        or _is_tool_approval_command(normalized)
+        or _is_tool_registration_command(normalized)
+        or _is_workflow_definition_command(normalized)
+        or _is_workflow_approval_command(normalized)
+        or _is_run_workflow_command(normalized)
+        or _is_run_tool_command(normalized)
+        or _is_confirm_run_tool_command(normalized)
+        or _is_apply_command(normalized)
+        or _extract_erm_request(normalized) is not None
+        or _extract_cdm_request(normalized) is not None
+        or _extract_tdm_request(normalized) is not None
+    )
+
+
+def _legacy_interaction_reason(text: str) -> str | None:
+    normalized = text.strip()
+    lowered = normalized.lower()
+    if not normalized:
+        return "Interaction rejected: input is empty."
+    if lowered.startswith("a0 "):
+        return "Interaction rejected: legacy interaction 'a0' is not supported."
+    if lowered.startswith("/plan"):
+        return "Interaction rejected: legacy interaction '/plan' is not supported."
+    if lowered.startswith("/engineer"):
+        return "Interaction rejected: legacy interaction '/engineer' is not supported."
+    if lowered.startswith("/exec"):
+        return "Interaction rejected: legacy interaction '/exec' is not supported."
+    if lowered.startswith("/ops"):
+        return "Interaction rejected: legacy interaction '/ops' is not supported."
+    if lowered.startswith("/simulate"):
+        return "Interaction rejected: legacy interaction '/simulate' is not supported."
+    if lowered.startswith("/"):
+        command = lowered.split()[0]
+        return f"Interaction rejected: legacy interaction '{command}' is not supported."
+    if normalized.startswith("GRANT_CAPABILITY"):
+        return "Interaction rejected: legacy capability-grant command is not supported."
+    if lowered.startswith("grant_autonomy "):
+        return "Interaction rejected: legacy autonomy-grant command is not supported."
+    if re.fullmatch(r"approve\s+[A-Za-z0-9._:-]+", lowered):
+        return "Interaction rejected: legacy approval command is not supported."
+    if lowered.startswith("approve plan "):
+        return "Interaction rejected: legacy plan approval command is not supported."
+    return None
+
+
+def _dispatch_interaction(runtime: "BillyRuntime", text: str) -> Dict[str, Any]:
+    normalized = text.strip()
+    legacy_reason = _legacy_interaction_reason(normalized)
+    if legacy_reason is not None:
+        return {
+            "category": "legacy interaction",
+            "route": "reject",
+            "message": legacy_reason,
+        }
+
+    if _has_explicit_governed_trigger(normalized):
+        return {
+            "category": "explicit governed",
+            "route": "explicit_command",
+        }
+
+    identity_response = runtime.resolve_identity_question(normalized)
+    if identity_response is not None:
+        return {
+            "category": "identity/context",
+            "route": "identity",
+            "response": identity_response,
+        }
+
+    preinspection_route = _classify_preinspection_route(normalized)
+    if preinspection_route is not None:
+        return {
+            "category": "identity/context",
+            "route": "preinspection",
+            "payload": preinspection_route,
+        }
+
+    return {
+        "category": "invalid/ambiguous",
+        "route": "deterministic_loop",
+    }
+
+
 _ERM_PREFIXES = ("engineer:", "analyze:", "review:")
 _CDM_PREFIXES = ("draft:", "code:", "propose:", "suggest:", "fix:")
 _TDM_PREFIXES = ("tool:", "define tool:", "design tool:", "propose tool:")
@@ -3838,61 +3925,14 @@ class BillyRuntime:
         This is the method called by:
         - /v1/chat/completions
         - CLI main.py
-
-        Special routing for Agent Zero commands starting with "a0 ".
         """
         normalized = prompt.strip()
         if not normalized:
             return ""
 
-        # Route Agent Zero commands
-        if normalized.startswith("a0 "):
-            try:
-                from v2.agent_zero.commands import handle_command
-                result = handle_command(prompt)
-                if result:
-                    return json.dumps(result, indent=2)
-            except ImportError as e:
-                return json.dumps({"error": f"Agent Zero module not available: {str(e)}"}, indent=2)
-            except Exception as e:
-                return json.dumps({"error": f"Error handling Agent Zero command: {str(e)}"}, indent=2)
-
-        # Runtime-first identity intercept: deterministic and model-independent.
-        identity_response = self.resolve_identity_question(normalized)
-        if identity_response is not None:
-            return identity_response
-
-        # Explicit runtime/control commands remain on deterministic runtime path.
-        is_control = (
-            normalized.startswith("/")
-            or normalized.startswith("GRANT_CAPABILITY")
-            or normalized.startswith("grant_autonomy ")
-            or normalized.startswith("/revoke_autonomy")
-            or normalized.upper().startswith("APPROVE ")
-            or normalized.upper().startswith("APPROVE PLAN ")
-            or normalized.lower() == "plan"
-            or normalized.lower().startswith("plan ")
-            or normalized.lower().startswith("claim:")
-            or _is_approval_command(normalized)
-            or _is_tool_approval_command(normalized)
-            or _is_tool_registration_command(normalized)
-            or _is_workflow_definition_command(normalized)
-            or _is_workflow_approval_command(normalized)
-            or _is_run_workflow_command(normalized)
-            or _is_run_tool_command(normalized)
-            or _is_confirm_run_tool_command(normalized)
-            or _is_apply_command(normalized)
-            or _extract_erm_request(normalized) is not None
-            or _extract_cdm_request(normalized) is not None
-            or _extract_tdm_request(normalized) is not None
-        )
-        if is_control:
-            trace_id = f"trace-{int(time.time() * 1000)}"
-            result = self.run_turn(prompt, {"trace_id": trace_id})
-            return self._render_user_output(result)
-
-        # Normal conversation should return a user-facing answer, not runtime state.
-        return self._llm_answer(prompt)
+        trace_id = f"trace-{int(time.time() * 1000)}"
+        result = self.run_turn(prompt, {"trace_id": trace_id})
+        return self._render_user_output(result)
 
     def run_turn(self, user_input: str, session_context: Dict[str, Any]):
         trace_id = session_context.get("trace_id") if isinstance(session_context, dict) else None
@@ -3901,11 +3941,20 @@ class BillyRuntime:
         assert_trace_id(trace_id)
         assert_explicit_memory_write(user_input)
         normalized_input = user_input.strip()
-        # Deterministic identity answers should bypass all planner/LLM paths.
-        identity_response = self.resolve_identity_question(normalized_input)
-        if identity_response is not None:
+        interaction_dispatch = _dispatch_interaction(self, normalized_input)
+        interaction_route = interaction_dispatch.get("route")
+
+        if interaction_route == "reject":
             return {
-                "final_output": identity_response,
+                "final_output": interaction_dispatch.get("message", "Interaction rejected."),
+                "tool_calls": [],
+                "status": "error",
+                "trace_id": trace_id,
+            }
+
+        if interaction_route == "identity":
+            return {
+                "final_output": interaction_dispatch.get("response", ""),
                 "tool_calls": [],
                 "status": "success",
                 "trace_id": trace_id,
@@ -4109,37 +4158,8 @@ class BillyRuntime:
                 "status": "success",
                 "trace_id": trace_id,
             }
-        if normalized_input.lower().startswith("/simulate "):
-            from v2.core.counterfactual import simulate_action
-
-            proposed = normalized_input[len("/simulate "):].strip()
-            result = simulate_action(
-                task_id=None,
-                plan_id=None,
-                step_id=None,
-                proposed_action=proposed,
-                now=datetime.now(timezone.utc),
-            )
-            response = "\n".join(
-                [
-                    "SIMULATION:",
-                    f"- status: {result.status}",
-                    f"- reasons: {result.reasons}",
-                    f"- required_evidence: {result.required_evidence}",
-                    f"- required_capabilities: {result.required_capabilities}",
-                    f"- triggered_failure_modes: {result.triggered_failure_modes}",
-                    f"- hypothetical_outcomes: {result.hypothetical_outcomes}",
-                ]
-            )
-            return {
-                "final_output": response,
-                "tool_calls": [],
-                "status": "success",
-                "trace_id": trace_id,
-            }
-        preinspection_route = _classify_preinspection_route(normalized_input)
-        if preinspection_route is not None:
-            route_type, route_payload = preinspection_route
+        if interaction_route == "preinspection":
+            route_type, route_payload = interaction_dispatch["payload"]
             if route_type == "memory_write":
                 memory_entry = _memory_router.route_write(route_payload)
                 if memory_entry:
@@ -4184,8 +4204,23 @@ class BillyRuntime:
                     "status": "success",
                     "trace_id": trace_id,
                 }
-        if not _should_use_legacy_routing(normalized_input):
+            return {
+                "final_output": "Interaction rejected: invalid preinspection route.",
+                "tool_calls": [],
+                "status": "error",
+                "trace_id": trace_id,
+            }
+
+        if interaction_route == "deterministic_loop":
             return _run_deterministic_loop(user_input, trace_id)
+
+        if interaction_route == "explicit_command":
+            return {
+                "final_output": "Interaction rejected: unresolved explicit command route.",
+                "tool_calls": [],
+                "status": "error",
+                "trace_id": trace_id,
+            }
 
         if normalized_input.startswith("/ops "):
             rest = normalized_input[len("/ops "):].strip()

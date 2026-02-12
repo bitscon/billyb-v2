@@ -149,7 +149,8 @@ def test_ops_required_per_step(tmp_path, monkeypatch):
     proposal = runtime_mod.run_turn("plan", {"trace_id": "trace-1"})
     plan_id = proposal["final_output"].split("plan_id:", 1)[1].splitlines()[0].strip()
     response = runtime_mod.run_turn(f"APPROVE PLAN {plan_id}", {"trace_id": "trace-1"})
-    assert "NEXT STEP: /ops restart nginx" in response["final_output"]
+    assert response["status"] == "error"
+    assert "legacy plan approval command" in response["final_output"]
 
 
 def test_new_plan_id_required_after_change(tmp_path, monkeypatch):

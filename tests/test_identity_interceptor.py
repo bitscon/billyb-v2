@@ -28,16 +28,27 @@ def test_run_turn_identity_question_bypasses_task_graph(monkeypatch):
     )
 
 
-def test_ask_non_identity_question_still_routes_to_llm(monkeypatch):
+def test_ask_non_identity_question_routes_through_runtime_dispatch(monkeypatch):
     runtime = runtime_mod.BillyRuntime(config={})
-    calls = []
+    observed = {}
 
-    def _fake_llm(prompt: str) -> str:
-        calls.append(prompt)
-        return "llm-response"
+    def _should_not_call_llm(_prompt: str) -> str:
+        raise AssertionError("ask() should route through run_turn, not direct LLM fallback.")
 
-    monkeypatch.setattr(runtime, "_llm_answer", _fake_llm)
+    def _fake_run_turn(user_input: str, session_context: dict):
+        observed["user_input"] = user_input
+        observed["trace_id"] = session_context.get("trace_id")
+        return {
+            "final_output": "runtime-response",
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": "trace-dispatch",
+        }
+
+    monkeypatch.setattr(runtime, "_llm_answer", _should_not_call_llm)
+    monkeypatch.setattr(runtime, "run_turn", _fake_run_turn)
 
     response = runtime.ask("Give me a short summary of the logs.")
-    assert response == "llm-response"
-    assert calls == ["Give me a short summary of the logs."]
+    assert response == "runtime-response"
+    assert observed["user_input"] == "Give me a short summary of the logs."
+    assert observed["trace_id"]

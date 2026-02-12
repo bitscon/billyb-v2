@@ -54,7 +54,7 @@ def test_missing_contract_blocks_execution(tmp_path, monkeypatch):
 
     response = runtime_mod.run_turn(f"/exec touch {target}", {})
     assert response["status"] == "error"
-    assert "missing capability contract" in response["final_output"].lower()
+    assert "legacy interaction '/exec'" in response["final_output"].lower()
     assert not target_path.exists()
 
 
@@ -87,7 +87,7 @@ def test_ops_required_rejected_outside_ops(tmp_path, monkeypatch):
 
     response = runtime_mod.run_turn(f"/exec touch {target}", {})
     assert response["status"] == "error"
-    assert "requires /ops" in response["final_output"].lower()
+    assert "legacy interaction '/exec'" in response["final_output"].lower()
     assert not target_path.exists()
 
 

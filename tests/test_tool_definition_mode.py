@@ -127,22 +127,29 @@ def test_ask_routes_explicit_tdm_prefix_to_runtime(monkeypatch):
 def test_ask_requires_explicit_tdm_prefix(monkeypatch):
     _reset_tdm_state()
     runtime = runtime_mod.BillyRuntime(config={})
-    llm_calls = []
+    observed = {}
 
-    def _fake_llm(prompt: str) -> str:
-        llm_calls.append(prompt)
-        return "llm-response"
+    def _fail_llm(_prompt: str) -> str:
+        raise AssertionError("ask() should not use direct LLM fallback for non-prefixed text.")
 
-    def _fail_run_turn(_user_input: str, _session_context: dict):
-        raise AssertionError("Non-prefixed tool wording should not route to TDM.")
+    def _fake_run_turn(user_input: str, session_context: dict):
+        observed["user_input"] = user_input
+        observed["trace_id"] = session_context.get("trace_id")
+        return {
+            "final_output": "runtime-output",
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": "trace-runtime",
+        }
 
-    monkeypatch.setattr(runtime, "_llm_answer", _fake_llm)
-    monkeypatch.setattr(runtime, "run_turn", _fail_run_turn)
+    monkeypatch.setattr(runtime, "_llm_answer", _fail_llm)
+    monkeypatch.setattr(runtime, "run_turn", _fake_run_turn)
 
     response = runtime.ask("please design a tool for audits")
 
-    assert response == "llm-response"
-    assert llm_calls == ["please design a tool for audits"]
+    assert response == "runtime-output"
+    assert observed["user_input"] == "please design a tool for audits"
+    assert observed["trace_id"]
 
 
 def test_tool_approval_succeeds_for_valid_tool_draft():
