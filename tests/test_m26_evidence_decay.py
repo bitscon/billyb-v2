@@ -1,9 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
-import core.evidence as evidence
-import core.introspection as introspection
-from core.failure_modes import evaluate_failure_modes, RuntimeContext
-from core.task_graph import TaskNode
+import v2.core.evidence as evidence
+import v2.core.introspection as introspection
+from v2.core.failure_modes import evaluate_failure_modes, RuntimeContext
+from v2.core.task_graph import TaskNode
 
 
 def _setup_evidence(tmp_path, monkeypatch, trace_id="trace-1"):

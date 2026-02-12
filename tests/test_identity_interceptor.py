@@ -1,4 +1,4 @@
-import core.runtime as runtime_mod
+import v2.core.runtime as runtime_mod
 
 
 def test_ask_identity_question_bypasses_llm(monkeypatch):

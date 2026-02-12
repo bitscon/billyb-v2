@@ -7,8 +7,10 @@ from typing import List, Optional, Union
 import json
 import uuid
 
-from core.guardrails.invariants import assert_trace_id
-from core import evidence as evidence_store
+from v2.core.guardrails.invariants import assert_trace_id
+from v2.core import evidence as evidence_store
+
+_V2_ROOT = Path(__file__).resolve().parents[1]
 
 
 CausalNodeType = str
@@ -74,7 +76,7 @@ class CausalEdge:
         )
 
 
-CAUSAL_TRACE_DIR = Path("v2/state/causal_traces")
+CAUSAL_TRACE_DIR = _V2_ROOT / "state" / "causal_traces"
 CAUSAL_TRACE_DIR.mkdir(parents=True, exist_ok=True)
 
 _CURRENT_TRACE_ID: Optional[str] = None
@@ -192,8 +194,12 @@ def explain_causal_chain(task_id: str) -> Optional[List[str]]:
     now = datetime.now(timezone.utc)
     for node in nodes:
         if node.node_type == "EVIDENCE":
-            if evidence_store.needs_revalidation(node.description, now):
-                return None
+            try:
+                if evidence_store.needs_revalidation(node.description, now):
+                    return None
+            except RuntimeError:
+                # Evidence store may be intentionally unset in trace-only contexts.
+                continue
     inbound = {node.node_id: 0 for node in nodes}
     for edge in edges:
         if edge.to_node_id in inbound:

@@ -1,5 +1,5 @@
-from core.trace.trace_inspector import TraceInspector
-from core.runtime import run_turn
+from v2.core.trace.trace_inspector import TraceInspector
+from v2.core.runtime import run_turn
 
 def test_trace_inspector(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)

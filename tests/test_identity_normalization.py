@@ -1,4 +1,4 @@
-import core.runtime as runtime_mod
+import v2.core.runtime as runtime_mod
 
 
 def test_identity_guard_rewrites_third_person_references():

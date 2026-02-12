@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import List
 import yaml
 
-from core.contracts.loader import ContractViolation
+from v2.core.contracts.loader import ContractViolation
+
+_V2_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -16,7 +18,7 @@ class CapabilityContract:
     guarantees: List[str]
 
 
-CAPABILITY_DIR = Path("v2/contracts/capabilities")
+CAPABILITY_DIR = _V2_ROOT / "contracts" / "capabilities"
 
 _ALLOWED_RISK_LEVELS = {"low", "medium", "high"}
 
@@ -73,7 +75,7 @@ def validate_preconditions(contract: CapabilityContract, context: dict) -> tuple
     if required_evidence:
         if not trace_id:
             return False, "blocked(reason=\"no evidence\")"
-        from core.evidence import load_evidence, has_evidence
+        from v2.core.evidence import load_evidence, has_evidence
 
         load_evidence(trace_id)
         for claim in required_evidence:

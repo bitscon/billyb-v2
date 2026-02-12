@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
 
+_V2_ROOT = Path(__file__).resolve().parents[2]
+
 class TraceInspector:
-    def __init__(self, trace_dir: str = "v2/var/traces"):
-        self.trace_dir = Path(trace_dir)
+    def __init__(self, trace_dir: str | None = None):
+        self.trace_dir = Path(trace_dir) if trace_dir is not None else (_V2_ROOT / "var" / "traces")
 
     def list_traces(self) -> list[str]:
         if not self.trace_dir.exists():

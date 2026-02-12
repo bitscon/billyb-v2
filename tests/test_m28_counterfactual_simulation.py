@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
-import core.counterfactual as counterfactual
-import core.evidence as evidence
-import core.task_graph as task_graph
+import v2.core.counterfactual as counterfactual
+import v2.core.evidence as evidence
+import v2.core.task_graph as task_graph
 
 
 def _setup(tmp_path, monkeypatch, trace_id="trace-1"):
@@ -57,7 +57,7 @@ def test_blocks_on_stale_evidence(tmp_path, monkeypatch):
 
 def test_blocks_on_missing_contract(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    from core import capability_contracts as ccr
+    from v2.core import capability_contracts as ccr
     monkeypatch.setattr(ccr, "CAPABILITY_DIR", tmp_path / "capabilities")
     now = datetime.now(timezone.utc)
     result = counterfactual.simulate_action(

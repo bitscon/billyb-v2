@@ -1,4 +1,4 @@
-from core.contracts.loader import ContractViolation
+from v2.core.contracts.loader import ContractViolation
 
 def assert_trace_id(trace_id: str):
     if not trace_id or not isinstance(trace_id, str):

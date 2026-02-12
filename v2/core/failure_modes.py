@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Optional, List
 import shlex
 
-from core.contracts.loader import ContractViolation
-from core.task_graph import TaskNode
-from core.evidence import load_evidence, _evaluate_claim_records
+from v2.core.contracts.loader import ContractViolation
+from v2.core.task_graph import TaskNode
+from v2.core.evidence import load_evidence, _evaluate_claim_records
 
 
 @dataclass(frozen=True)
@@ -135,7 +135,7 @@ def _extract_capability(description: str) -> tuple[str, str, bool]:
 
 
 def _load_contract_for_failure(capability: str):
-    from core.capability_contracts import CAPABILITY_DIR
+    from v2.core.capability_contracts import CAPABILITY_DIR
 
     matches = []
     invalid = False

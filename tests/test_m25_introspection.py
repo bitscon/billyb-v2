@@ -1,7 +1,7 @@
 import json
 
-import core.evidence as evidence
-import core.introspection as introspection
+import v2.core.evidence as evidence
+import v2.core.introspection as introspection
 
 
 def _setup_evidence(tmp_path, monkeypatch, trace_id="trace-1"):

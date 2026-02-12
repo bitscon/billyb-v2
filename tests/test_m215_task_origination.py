@@ -1,8 +1,8 @@
-import core.runtime as runtime_mod
-import core.task_graph as tg
-import core.evidence as evidence
-import core.causal_trace as causal_trace
-import core.introspection as introspection
+import v2.core.runtime as runtime_mod
+import v2.core.task_graph as tg
+import v2.core.evidence as evidence
+import v2.core.causal_trace as causal_trace
+import v2.core.introspection as introspection
 
 
 def _setup_dirs(tmp_path, monkeypatch, trace_id="trace-1"):

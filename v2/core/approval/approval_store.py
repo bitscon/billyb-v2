@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 from datetime import datetime
-from core.contracts.loader import ContractViolation
+from v2.core.contracts.loader import ContractViolation
+
+_V2_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ApprovalStore:
@@ -10,7 +12,7 @@ class ApprovalStore:
     """
 
     def __init__(self, base_dir: str | None = None):
-        self.base_dir = Path(base_dir or "v2/var/approvals")
+        self.base_dir = Path(base_dir) if base_dir is not None else (_V2_ROOT / "var" / "approvals")
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.history_path = self.base_dir / "history.jsonl"
         self.state_path = self.base_dir / "state.json"
@@ -62,6 +64,7 @@ class ApprovalStore:
         return record
 
     def _append_history(self, record: dict) -> None:
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
         with self.history_path.open("a") as f:
             f.write(json.dumps(record))
             f.write("\n")
@@ -73,6 +76,7 @@ class ApprovalStore:
             return json.load(f)
 
     def _save_state(self, state: dict) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
         with self.state_path.open("w") as f:
             json.dump(state, f, indent=2)
             f.write("\n")

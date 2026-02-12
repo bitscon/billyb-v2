@@ -1,7 +1,7 @@
 import pytest
 
 import v2.core.evidence as evidence
-from core.contracts.loader import ContractViolation
+from v2.core.contracts.loader import ContractViolation
 
 
 def _reset_evidence():

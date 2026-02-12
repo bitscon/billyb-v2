@@ -2,12 +2,14 @@ import json
 import uuid
 from pathlib import Path
 from datetime import datetime
-from core.contracts.loader import ContractViolation, validate_trace_event
+from v2.core.contracts.loader import ContractViolation, validate_trace_event
+
+_V2_ROOT = Path(__file__).resolve().parents[2]
 
 
 class FileMemoryStore:
     def __init__(self, base_dir: str | None = None, trace_sink=None):
-        self.base_dir = Path(base_dir or "v2/var/memory")
+        self.base_dir = Path(base_dir) if base_dir is not None else (_V2_ROOT / "var" / "memory")
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.trace_sink = trace_sink
 

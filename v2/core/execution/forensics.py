@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+_V2_ROOT = Path(__file__).resolve().parents[2]
+
 
 class Forensics:
     """
@@ -8,7 +10,7 @@ class Forensics:
     """
 
     def __init__(self, base_dir: str | None = None):
-        self.base_dir = Path(base_dir or "v2/var/executions")
+        self.base_dir = Path(base_dir) if base_dir is not None else (_V2_ROOT / "var" / "executions")
         self.records_path = self.base_dir / "journal.jsonl"
 
     def _load(self) -> list[dict]:

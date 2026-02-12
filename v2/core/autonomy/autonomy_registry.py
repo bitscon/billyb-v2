@@ -1,7 +1,7 @@
 import os
 import time
 from datetime import datetime
-from core.contracts.loader import ContractViolation
+from v2.core.contracts.loader import ContractViolation
 
 
 class AutonomyRegistry:

@@ -1,10 +1,10 @@
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-import core.task_selector as selector
-import core.task_graph as tg
-import core.evidence as evidence
-import core.capability_contracts as ccr
+import v2.core.task_selector as selector
+import v2.core.task_graph as tg
+import v2.core.evidence as evidence
+import v2.core.capability_contracts as ccr
 
 
 def _setup_dirs(tmp_path, monkeypatch):

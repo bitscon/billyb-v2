@@ -1,4 +1,4 @@
-from core.autonomy.autonomy_registry import AutonomyRegistry
+from v2.core.autonomy.autonomy_registry import AutonomyRegistry
 
 
 def test_grant_allows_scoped_action():

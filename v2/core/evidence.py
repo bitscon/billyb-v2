@@ -8,8 +8,10 @@ import hashlib
 import json
 import uuid
 
-from core.contracts.loader import ContractViolation
-from core.guardrails.invariants import assert_trace_id
+from v2.core.contracts.loader import ContractViolation
+from v2.core.guardrails.invariants import assert_trace_id
+
+_V2_ROOT = Path(__file__).resolve().parents[1]
 
 
 EvidenceSourceType = Literal["command", "file", "test", "observation", "introspection"]
@@ -64,7 +66,7 @@ class Evidence:
         )
 
 
-EVIDENCE_DIR = Path("v2/state/evidence")
+EVIDENCE_DIR = _V2_ROOT / "state" / "evidence"
 EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
 
 _CURRENT_TRACE_ID: Optional[str] = None
@@ -94,7 +96,7 @@ def load_evidence(trace_id: str) -> Path:
     if not path.exists():
         path.touch()
     try:
-        from core.causal_trace import load_trace
+        from v2.core.causal_trace import load_trace
 
         load_trace(trace_id)
     except Exception:
@@ -133,7 +135,7 @@ def record_evidence(
     evidence = _apply_expiry(evidence)
     _append_line(path, evidence.to_dict())
     try:
-        from core.causal_trace import create_node
+        from v2.core.causal_trace import create_node
 
         create_node(
             node_type="EVIDENCE",

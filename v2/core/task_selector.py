@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional, List, Dict
 import shlex
 
-from core.task_graph import TaskNode
-from core.evidence import load_evidence, has_evidence
+from v2.core.task_graph import TaskNode
+from v2.core.evidence import load_evidence, _evaluate_claim_records
 
 
 @dataclass(frozen=True)
@@ -119,7 +120,10 @@ def select_next_task(tasks: List[TaskNode], context: SelectionContext) -> Select
             required_evidence = extract_evidence(task.description)
 
         for claim in required_evidence:
-            if not has_evidence(claim):
+            evidence_status, _ = _evaluate_claim_records(claim, datetime.now(timezone.utc))
+            if evidence_status == "conflict":
+                reasons.append(f"conflicting evidence: {claim}")
+            elif evidence_status != "ok":
                 reasons.append(f"missing evidence: {claim}")
 
         if reasons:
@@ -160,7 +164,7 @@ def select_next_task(tasks: List[TaskNode], context: SelectionContext) -> Select
 
 
 def _contract_status(capability: str):
-    from core import capability_contracts
+    from v2.core import capability_contracts
 
     matches = []
     invalid = False

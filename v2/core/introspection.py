@@ -12,7 +12,7 @@ import socket
 import subprocess
 import uuid
 
-from core.evidence import record_evidence
+from v2.core.evidence import record_evidence
 
 ALLOWED_SCOPES = {"host", "services", "containers", "filesystem", "network"}
 DEFAULT_SCOPE = ["host", "services", "containers", "filesystem", "network"]

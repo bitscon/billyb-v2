@@ -1,7 +1,7 @@
-import os
 import json
 from pathlib import Path
-from core.runtime import run_turn
+import v2.core.runtime as runtime_mod
+from v2.core.runtime import run_turn
 
 def test_happy_path_execution(tmp_path, monkeypatch):
     # isolate var directories
@@ -33,7 +33,7 @@ def test_trace_emitted(tmp_path, monkeypatch):
     result = run_turn(user_input="run hello", session_context={})
     trace_id = result["trace_id"]
 
-    trace_dir = Path("v2/var/traces")
+    trace_dir = Path(runtime_mod._trace_sink.base_dir)
     trace_file = trace_dir / f"{trace_id}.jsonl"
 
     assert trace_file.exists()

@@ -7,7 +7,9 @@ from typing import List, Optional
 import json
 import uuid
 
-from core.contracts.loader import ContractViolation
+from v2.core.contracts.loader import ContractViolation
+
+_V2_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,7 @@ class Plan:
         }
 
 
-PLANS_DIR = Path("v2/state/plans")
+PLANS_DIR = _V2_ROOT / "state" / "plans"
 PLANS_DIR.mkdir(parents=True, exist_ok=True)
 
 

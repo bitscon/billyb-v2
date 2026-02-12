@@ -6,13 +6,15 @@ from pathlib import Path
 from typing import List, Optional
 import shlex
 
-from core import evidence as evidence_store
-from core.capability_contracts import load_contract
-from core.contracts.loader import ContractViolation
-from core.failure_modes import evaluate_failure_modes, RuntimeContext
-from core.plans_hamp import get_plan, Plan
-from core.task_graph import TaskNode
-from core.causal_trace import explain_causal_chain
+from v2.core import evidence as evidence_store
+from v2.core.capability_contracts import load_contract
+from v2.core.contracts.loader import ContractViolation
+from v2.core.failure_modes import evaluate_failure_modes, RuntimeContext
+from v2.core.plans_hamp import get_plan, Plan
+from v2.core.task_graph import TaskNode
+from v2.core.causal_trace import explain_causal_chain
+
+_V2_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -256,5 +258,5 @@ def _simulation_task(task_id: Optional[str], description: str, now: datetime) ->
 def _causal_trace_exists(trace_id: Optional[str]) -> bool:
     if not trace_id:
         return False
-    path = Path("v2/state/causal_traces") / f"{trace_id}.jsonl"
+    path = _V2_ROOT / "state" / "causal_traces" / f"{trace_id}.jsonl"
     return path.exists()

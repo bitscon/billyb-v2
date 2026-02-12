@@ -7,7 +7,9 @@ from typing import Dict, List, Optional, Literal
 import uuid
 import yaml
 
-from core.guardrails.invariants import assert_trace_id
+from v2.core.guardrails.invariants import assert_trace_id
+
+_V2_ROOT = Path(__file__).resolve().parents[1]
 
 
 TaskStatus = Literal["pending", "ready", "blocked", "done", "failed"]
@@ -77,7 +79,7 @@ class TaskGraph:
         return graph
 
 
-TASK_GRAPH_DIR = Path("v2/state/task_graph")
+TASK_GRAPH_DIR = _V2_ROOT / "state" / "task_graph"
 TASK_GRAPH_DIR.mkdir(parents=True, exist_ok=True)
 
 _GRAPHS: Dict[str, TaskGraph] = {}

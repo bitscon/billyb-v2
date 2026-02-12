@@ -2,7 +2,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from core.contracts.loader import validate_trace_event, ContractViolation
+from v2.core.contracts.loader import validate_trace_event, ContractViolation
 
 class DockerRunner:
     def __init__(self, trace_sink):

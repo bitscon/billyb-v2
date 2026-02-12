@@ -1,10 +1,10 @@
 from datetime import datetime, timezone
 
-import core.causal_trace as causal_trace
-import core.evidence as evidence
-import core.introspection as introspection
-import core.task_graph as task_graph
-from core.runtime import _run_deterministic_loop
+import v2.core.causal_trace as causal_trace
+import v2.core.evidence as evidence
+import v2.core.introspection as introspection
+import v2.core.task_graph as task_graph
+from v2.core.runtime import _run_deterministic_loop
 
 
 def _setup_dirs(tmp_path, monkeypatch):

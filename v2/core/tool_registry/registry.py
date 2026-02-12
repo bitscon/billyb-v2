@@ -1,4 +1,4 @@
-from core.contracts.loader import validate_tool_spec, ContractViolation
+from v2.core.contracts.loader import validate_tool_spec, ContractViolation
 
 class ToolRegistry:
     def __init__(self):

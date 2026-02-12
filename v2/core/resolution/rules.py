@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 import re
 
-from core.resolution.outcomes import ResolutionOutcome
+from v2.core.resolution.outcomes import ResolutionOutcome
 
 
 @dataclass(frozen=True)

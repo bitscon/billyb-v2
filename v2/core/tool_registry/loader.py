@@ -1,6 +1,6 @@
 import yaml
 from pathlib import Path
-from core.contracts.loader import validate_tool_spec, ContractViolation
+from v2.core.contracts.loader import validate_tool_spec, ContractViolation
 
 class ToolLoader:
     def __init__(self, tools_dir: str):

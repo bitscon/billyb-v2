@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
 
-from core.resolution.outcomes import ResolutionOutcome, M27_CONTRACT_VERSION
-from core.resolution.rules import (
+from v2.core.resolution.outcomes import ResolutionOutcome, M27_CONTRACT_VERSION
+from v2.core.resolution.rules import (
     EvidenceBundle,
     InspectionMeta,
     ResolutionTask,

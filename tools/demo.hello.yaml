@@ -1,0 +1,20 @@
+id: demo.hello
+name: Demo Hello
+description: Writes hello output to a workspace artifact.
+version: "1.0.0"
+args_schema: {}
+permissions:
+  network:
+    outbound: false
+  filesystem:
+    read: []
+    write:
+      - /workspace
+  secrets:
+    allowed: []
+  execution:
+    runner: docker
+    max_duration_sec: 30
+artifacts:
+  produces:
+    - /workspace/output.txt

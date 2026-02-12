@@ -1,5 +1,5 @@
-from core.contracts.loader import ContractViolation
-from core.tools.tool_contract import ToolContract
+from v2.core.contracts.loader import ContractViolation
+from v2.core.tools.tool_contract import ToolContract
 
 class CapabilityRegistry:
     def __init__(self):

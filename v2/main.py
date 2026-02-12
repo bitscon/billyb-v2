@@ -1,7 +1,6 @@
 import sys
-import os
 from pathlib import Path
-from core.runtime import BillyRuntime
+from v2.core.runtime import BillyRuntime
 
 
 def _print_usage() -> None:
@@ -17,9 +16,7 @@ def _print_usage() -> None:
 
 
 def main():
-    # Ensure the root of the project is in the Python path
-    project_root = Path(__file__).parent.resolve()
-    sys.path.insert(0, str(project_root))
+    project_root = Path(__file__).resolve().parent
 
     if len(sys.argv) < 2:
         _print_usage()

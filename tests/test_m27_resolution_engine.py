@@ -3,14 +3,14 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-import core.runtime as runtime_mod
-import core.task_graph as tg
-import core.evidence as evidence
-import core.causal_trace as causal_trace
-import core.introspection as introspection
-from core.resolution.resolver import build_task, resolve_task, empty_evidence_bundle
-from core.resolution.rules import EvidenceBundle, InspectionMeta
-from core.resolution.outcomes import M27_CONTRACT_VERSION, ResolutionOutcome
+import v2.core.runtime as runtime_mod
+import v2.core.task_graph as tg
+import v2.core.evidence as evidence
+import v2.core.causal_trace as causal_trace
+import v2.core.introspection as introspection
+from v2.core.resolution.resolver import build_task, resolve_task, empty_evidence_bundle
+from v2.core.resolution.rules import EvidenceBundle, InspectionMeta
+from v2.core.resolution.outcomes import M27_CONTRACT_VERSION, ResolutionOutcome
 
 
 class TestM27ResolutionEngine(unittest.TestCase):
@@ -252,7 +252,7 @@ class TestM27ResolutionEngine(unittest.TestCase):
 
     def test_runtime_rejects_contract_version_mismatch(self):
         import tempfile
-        from core.resolution import resolver as resolver_mod
+        from v2.core.resolution import resolver as resolver_mod
 
         tmp_dir = tempfile.TemporaryDirectory()
         trace_id = self._setup_dirs(Path(tmp_dir.name))
@@ -524,7 +524,7 @@ class TestM27ResolutionEngine(unittest.TestCase):
         self.assertTrue(fp_a != fp_b)
 
     def test_resolver_rejects_none_outcome(self):
-        from core.resolution import resolver as resolver_mod
+        from v2.core.resolution import resolver as resolver_mod
 
         original_apply_rules = resolver_mod.apply_rules
 
@@ -545,8 +545,8 @@ class TestM27ResolutionEngine(unittest.TestCase):
             resolver_mod.apply_rules = original_apply_rules
 
     def test_resolver_rejects_invalid_resolution_type(self):
-        from core.resolution import resolver as resolver_mod
-        from core.resolution.outcomes import ResolutionOutcome
+        from v2.core.resolution import resolver as resolver_mod
+        from v2.core.resolution.outcomes import ResolutionOutcome
 
         original_apply_rules = resolver_mod.apply_rules
 
@@ -567,7 +567,7 @@ class TestM27ResolutionEngine(unittest.TestCase):
 
     def test_runtime_aborts_on_malformed_resolution(self):
         import tempfile
-        from core.resolution import resolver as resolver_mod
+        from v2.core.resolution import resolver as resolver_mod
 
         tmp_dir = tempfile.TemporaryDirectory()
         trace_id = self._setup_dirs(Path(tmp_dir.name))

@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from datetime import datetime
 
+_V2_ROOT = Path(__file__).resolve().parents[2]
+
 
 class ExecutionJournal:
     """
@@ -9,11 +11,12 @@ class ExecutionJournal:
     """
 
     def __init__(self, base_dir: str | None = None):
-        self.base_dir = Path(base_dir or "v2/var/executions")
+        self.base_dir = Path(base_dir) if base_dir is not None else (_V2_ROOT / "var" / "executions")
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.records_path = self.base_dir / "journal.jsonl"
 
     def append(self, record: dict) -> None:
+        self.records_path.parent.mkdir(parents=True, exist_ok=True)
         with self.records_path.open("a") as f:
             f.write(json.dumps(record))
             f.write("\n")
