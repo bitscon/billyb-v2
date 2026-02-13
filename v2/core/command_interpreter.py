@@ -33,6 +33,7 @@ from v2.core.command_memory import (
 )
 from v2.core.metrics import MetricsSummary, get_metrics_summary, increment_metric, record_latency_ms, reset_metrics
 from v2.core.observability import (
+    current_correlation_id,
     ensure_observability_context,
     log_telemetry_event,
     observability_turn,
@@ -98,6 +99,7 @@ _PHASE8_RISK_ORDER = {
     "high": 2,
     "critical": 3,
 }
+_PHASE15_CONSTRAINT_MODES = {"read_only", "bounded_write"}
 
 _PHASE4_DEFAULT_POLICY = {
     # "privileged" maps to schema-valid "critical".
@@ -145,10 +147,44 @@ class PendingPlan:
     next_step_index: int
 
 
+@dataclass(frozen=True)
+class AutonomyScope:
+    allowed_lanes: List[str]
+    allowed_intents: List[str]
+
+
+@dataclass(frozen=True)
+class AutonomyConstraints:
+    mode: str
+    max_risk_level: str
+    allowed_tools: List[str]
+    blocked_tools: List[str]
+    max_actions: int
+
+
+@dataclass
+class AutonomySession:
+    session_id: str
+    scope: AutonomyScope
+    constraints: AutonomyConstraints
+    origin: str
+    enabled_at: str
+    expires_at: str
+    active: bool
+    stop_reason: str | None
+    revoked_at: str | None
+    ended_at: str | None
+    actions_executed: int
+    events: List[Dict[str, Any]]
+
+
 _pending_action: PendingAction | None = None
 _execution_events: List[Dict[str, Any]] = []
 _memory_store: MemoryStore = InMemoryMemoryStore()
 _pending_plan: PendingPlan | None = None
+_active_autonomy_session_id: str | None = None
+_autonomy_sessions: Dict[str, AutonomySession] = {}
+_autonomy_session_order: List[str] = []
 
 
 @dataclass(frozen=True)
@@ -1302,10 +1338,280 @@ def get_pending_plan() -> Dict[str, Any] | None:
     }
 
 
+def _serialize_autonomy_scope(scope: AutonomyScope) -> Dict[str, Any]:
+    return {
+        "allowed_lanes": list(scope.allowed_lanes),
+        "allowed_intents": list(scope.allowed_intents),
+    }
+
+
+def _serialize_autonomy_constraints(constraints: AutonomyConstraints) -> Dict[str, Any]:
+    return {
+        "mode": constraints.mode,
+        "max_risk_level": constraints.max_risk_level,
+        "allowed_tools": list(constraints.allowed_tools),
+        "blocked_tools": list(constraints.blocked_tools),
+        "max_actions": constraints.max_actions,
+    }
+
+
+def _serialize_autonomy_session(session: AutonomySession, *, include_events: bool) -> Dict[str, Any]:
+    payload = {
+        "session_id": session.session_id,
+        "scope": _serialize_autonomy_scope(session.scope),
+        "constraints": _serialize_autonomy_constraints(session.constraints),
+        "origin": session.origin,
+        "enabled_at": session.enabled_at,
+        "expires_at": session.expires_at,
+        "active": session.active,
+        "stop_reason": session.stop_reason,
+        "revoked_at": session.revoked_at,
+        "ended_at": session.ended_at,
+        "actions_executed": session.actions_executed,
+        "event_count": len(session.events),
+    }
+    if include_events:
+        payload["events"] = copy.deepcopy(session.events)
+    return payload
+
+
+def _autonomy_event(
+    session: AutonomySession,
+    *,
+    event_type: str,
+    metadata: Dict[str, Any] | None = None,
+) -> None:
+    correlation = current_correlation_id() or f"corr-{uuid.uuid4()}"
+    event = {
+        "event_id": f"autoevt-{uuid.uuid4()}",
+        "timestamp": _utcnow().isoformat(),
+        "event_type": str(event_type),
+        "correlation_id": correlation,
+        "metadata": copy.deepcopy(metadata or {}),
+    }
+    session.events.append(event)
+
+
+def _normalize_autonomy_scope(scope: AutonomyScope) -> AutonomyScope:
+    allowed_lanes: List[str] = []
+    for lane in scope.allowed_lanes:
+        normalized_lane = str(lane).strip().upper()
+        if not normalized_lane:
+            continue
+        allowed_lanes.append(normalized_lane)
+    allowed_intents: List[str] = []
+    for intent in scope.allowed_intents:
+        normalized_intent = str(intent).strip()
+        if not normalized_intent:
+            continue
+        allowed_intents.append(normalized_intent)
+    return AutonomyScope(
+        allowed_lanes=sorted(set(allowed_lanes)),
+        allowed_intents=sorted(set(allowed_intents)),
+    )
+
+
+def _normalize_autonomy_constraints(constraints: AutonomyConstraints) -> AutonomyConstraints:
+    mode = str(constraints.mode).strip().lower()
+    if mode not in _PHASE15_CONSTRAINT_MODES:
+        raise ValueError(f"Unsupported autonomy constraint mode: {constraints.mode}")
+    max_risk = str(constraints.max_risk_level).strip().lower()
+    if max_risk not in _PHASE8_RISK_ORDER:
+        raise ValueError(f"Unsupported autonomy max_risk_level: {constraints.max_risk_level}")
+    max_actions = int(constraints.max_actions)
+    if max_actions <= 0:
+        raise ValueError("Autonomy constraints require max_actions > 0.")
+    allowed_tools = sorted({str(name).strip() for name in constraints.allowed_tools if str(name).strip()})
+    blocked_tools = sorted({str(name).strip() for name in constraints.blocked_tools if str(name).strip()})
+    return AutonomyConstraints(
+        mode=mode,
+        max_risk_level=max_risk,
+        allowed_tools=allowed_tools,
+        blocked_tools=blocked_tools,
+        max_actions=max_actions,
+    )
+
+
+def _autonomy_session_expired(session: AutonomySession) -> bool:
+    return _utcnow() > _parse_iso(session.expires_at)
+
+
+def _close_autonomy_session(
+    session: AutonomySession,
+    *,
+    reason: str,
+    event_type: str,
+    metadata: Dict[str, Any] | None = None,
+) -> None:
+    global _active_autonomy_session_id
+    if not session.active:
+        return
+    session.active = False
+    session.stop_reason = reason
+    session.ended_at = _utcnow().isoformat()
+    _autonomy_event(session, event_type=event_type, metadata=metadata)
+    _emit_observability_event(
+        phase="phase15",
+        event_type=event_type,
+        metadata={
+            "autonomy_session_id": session.session_id,
+            "reason": reason,
+            "actions_executed": session.actions_executed,
+        },
+    )
+    if _active_autonomy_session_id == session.session_id:
+        _active_autonomy_session_id = None
+
+
+def _get_active_autonomy_session() -> AutonomySession | None:
+    session_id = _active_autonomy_session_id
+    if session_id is None:
+        return None
+    session = _autonomy_sessions.get(session_id)
+    if session is None:
+        return None
+    if not session.active:
+        return None
+    if _autonomy_session_expired(session):
+        _close_autonomy_session(
+            session,
+            reason="expired",
+            event_type="autonomy_expired",
+            metadata={"autonomy_session_id": session.session_id},
+        )
+        return None
+    return session
+
+
+def enable_autonomy(
+    scope: AutonomyScope,
+    duration: timedelta,
+    constraints: AutonomyConstraints,
+    *,
+    origin: str = "human.explicit",
+) -> Dict[str, Any]:
+    global _active_autonomy_session_id
+    if not isinstance(scope, AutonomyScope):
+        raise ValueError("scope must be an AutonomyScope instance.")
+    if not isinstance(duration, timedelta):
+        raise ValueError("duration must be a timedelta.")
+    if duration.total_seconds() <= 0:
+        raise ValueError("duration must be greater than zero.")
+    if not isinstance(constraints, AutonomyConstraints):
+        raise ValueError("constraints must be an AutonomyConstraints instance.")
+
+    normalized_scope = _normalize_autonomy_scope(scope)
+    normalized_constraints = _normalize_autonomy_constraints(constraints)
+    if not normalized_scope.allowed_intents:
+        raise ValueError("Autonomy scope must include at least one allowed intent.")
+    if not normalized_scope.allowed_lanes:
+        raise ValueError("Autonomy scope must include at least one allowed lane.")
+
+    active = _get_active_autonomy_session()
+    if active is not None:
+        _close_autonomy_session(
+            active,
+            reason="superseded",
+            event_type="autonomy_superseded",
+            metadata={"autonomy_session_id": active.session_id},
+        )
+
+    now = _utcnow()
+    session = AutonomySession(
+        session_id=f"autosess-{uuid.uuid4()}",
+        scope=normalized_scope,
+        constraints=normalized_constraints,
+        origin=str(origin).strip() or "human.explicit",
+        enabled_at=now.isoformat(),
+        expires_at=(now + duration).isoformat(),
+        active=True,
+        stop_reason=None,
+        revoked_at=None,
+        ended_at=None,
+        actions_executed=0,
+        events=[],
+    )
+    _autonomy_sessions[session.session_id] = session
+    _autonomy_session_order.append(session.session_id)
+    _active_autonomy_session_id = session.session_id
+    _autonomy_event(
+        session,
+        event_type="autonomy_enabled",
+        metadata={
+            "scope": _serialize_autonomy_scope(session.scope),
+            "constraints": _serialize_autonomy_constraints(session.constraints),
+            "origin": session.origin,
+        },
+    )
+    _emit_observability_event(
+        phase="phase15",
+        event_type="autonomy_enabled",
+        metadata={
+            "autonomy_session_id": session.session_id,
+            "origin": session.origin,
+            "scope": _serialize_autonomy_scope(session.scope),
+            "constraints": _serialize_autonomy_constraints(session.constraints),
+        },
+    )
+    return _serialize_autonomy_session(session, include_events=False)
+
+
+def revoke_autonomy() -> Dict[str, Any]:
+    session = _get_active_autonomy_session()
+    if session is None:
+        return {
+            "revoked": False,
+            "message": "No active autonomy session to revoke.",
+        }
+    session.revoked_at = _utcnow().isoformat()
+    _close_autonomy_session(
+        session,
+        reason="manual_revoke",
+        event_type="autonomy_revoked",
+        metadata={"autonomy_session_id": session.session_id},
+    )
+    return {
+        "revoked": True,
+        "session_id": session.session_id,
+        "actions_executed": session.actions_executed,
+    }
+
+
+def list_autonomy_sessions() -> List[Dict[str, Any]]:
+    sessions: List[Dict[str, Any]] = []
+    for session_id in _autonomy_session_order:
+        session = _autonomy_sessions.get(session_id)
+        if session is None:
+            continue
+        sessions.append(_serialize_autonomy_session(session, include_events=False))
+    return sessions
+
+
+def get_autonomy_session_report(session_id: str) -> Dict[str, Any]:
+    key = str(session_id).strip()
+    if not key:
+        raise ValueError("session_id is required.")
+    session = _autonomy_sessions.get(key)
+    if session is None:
+        raise ValueError(f"Autonomy session not found: {session_id}")
+    events = sorted(session.events, key=lambda event: str(event.get("timestamp", "")))
+    report = _serialize_autonomy_session(session, include_events=False)
+    report["events"] = copy.deepcopy(events)
+    return report
+
+
+def reset_phase15_state() -> None:
+    global _active_autonomy_session_id, _autonomy_sessions, _autonomy_session_order
+    _active_autonomy_session_id = None
+    _autonomy_sessions = {}
+    _autonomy_session_order = []
+
+
 def reset_phase5_state() -> None:
     global _pending_action, _execution_events
     _pending_action = None
     reset_phase8_state()
+    reset_phase15_state()
     _execution_events = []
     reset_phase7_memory()
     reset_observability_state()
@@ -1693,6 +1999,279 @@ def _execute_plan_steps_from_pending() -> Dict[str, Any]:
     }
 
 
+def _scope_allows_envelope(scope: AutonomyScope, envelope: Envelope) -> tuple[bool, str]:
+    lane = str(envelope.get("lane", "")).upper()
+    intent = str(envelope.get("intent", ""))
+    if scope.allowed_lanes and lane not in set(scope.allowed_lanes):
+        return False, f"scope_violation: lane {lane} is not permitted"
+    if not scope.allowed_intents:
+        return False, "scope_violation: no allowed intents configured"
+    if "*" in scope.allowed_intents:
+        return True, ""
+    for allowed_intent in scope.allowed_intents:
+        if allowed_intent == intent:
+            return True, ""
+        if allowed_intent.endswith(".*") and intent.startswith(allowed_intent[:-1]):
+            return True, ""
+    return False, f"scope_violation: intent {intent} is not permitted"
+
+
+def _constraints_allow_step(
+    session: AutonomySession,
+    step: PlanStep,
+) -> tuple[bool, str]:
+    constraints = session.constraints
+    tool_name = step.tool_contract.tool_name
+
+    if constraints.allowed_tools and tool_name not in set(constraints.allowed_tools):
+        return False, f"constraint_violation: tool {tool_name} is not in allowed_tools"
+    if constraints.blocked_tools and tool_name in set(constraints.blocked_tools):
+        return False, f"constraint_violation: tool {tool_name} is blocked"
+
+    if constraints.mode == "read_only" and bool(step.tool_contract.side_effects):
+        return False, f"constraint_violation: mode read_only forbids side-effect tool {tool_name}"
+
+    max_risk = _PHASE8_RISK_ORDER.get(constraints.max_risk_level, 0)
+    step_risk = _PHASE8_RISK_ORDER.get(step.risk_level, 0)
+    if step_risk > max_risk:
+        return (
+            False,
+            f"constraint_violation: risk {step.risk_level} exceeds max_risk_level {constraints.max_risk_level}",
+        )
+
+    if session.actions_executed >= constraints.max_actions:
+        return (
+            False,
+            f"constraint_violation: max_actions exhausted ({constraints.max_actions})",
+        )
+    return True, ""
+
+
+def _autonomy_terminated_response(
+    *,
+    session: AutonomySession,
+    message: str,
+    envelope: Envelope | None = None,
+    events: List[Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
+    payload = {
+        "type": "autonomy_terminated",
+        "executed": bool(events),
+        "session_id": session.session_id,
+        "actions_executed": session.actions_executed,
+        "message": message,
+    }
+    if envelope is not None:
+        payload["envelope"] = envelope
+    if events is not None:
+        payload["execution_events"] = copy.deepcopy(events)
+    return payload
+
+
+def _process_user_message_phase15(utterance: str) -> Dict[str, Any] | None:
+    session = _get_active_autonomy_session()
+    if session is None:
+        return None
+    if _pending_action is not None or _pending_plan is not None:
+        return None
+
+    normalized = _normalize(utterance)
+    if _is_valid_approval_phrase(normalized):
+        return None
+    if _is_deprecated_engineer_mode_input(normalized):
+        return None
+
+    routed_utterance = _phase9_normalize_utterance(normalized)
+    envelope = interpret_utterance(routed_utterance)
+    increment_metric("policy_decisions")
+    _emit_observability_event(
+        phase="phase1-4",
+        event_type="utterance_interpreted",
+        metadata=_envelope_pointer(envelope),
+    )
+    _emit_observability_event(
+        phase="phase4",
+        event_type="policy_evaluated",
+        metadata=_envelope_pointer(envelope),
+    )
+
+    if not _is_actionable_envelope(envelope):
+        return {
+            "type": "no_action",
+            "executed": False,
+            "envelope": envelope,
+            "message": "",
+        }
+
+    allowed_scope, scope_reason = _scope_allows_envelope(session.scope, envelope)
+    if not allowed_scope:
+        _close_autonomy_session(
+            session,
+            reason="scope_violation",
+            event_type="autonomy_scope_violation",
+            metadata={
+                "autonomy_session_id": session.session_id,
+                "intent": str(envelope.get("intent", "")),
+                "lane": str(envelope.get("lane", "")),
+                "reason": scope_reason,
+            },
+        )
+        return _autonomy_terminated_response(
+            session=session,
+            envelope=envelope,
+            message=f"Autonomy terminated: {scope_reason}.",
+            events=[],
+        )
+
+    try:
+        plan = build_execution_plan(envelope)
+    except Exception as exc:
+        _autonomy_event(
+            session,
+            event_type="autonomy_plan_rejected",
+            metadata={
+                "autonomy_session_id": session.session_id,
+                "error": str(exc),
+            },
+        )
+        _emit_observability_event(
+            phase="phase15",
+            event_type="autonomy_plan_rejected",
+            metadata={
+                "autonomy_session_id": session.session_id,
+                "error": str(exc),
+            },
+        )
+        return {
+            "type": "plan_rejected",
+            "executed": False,
+            "envelope": envelope,
+            "message": f"Plan rejected: {exc}",
+        }
+
+    events: List[Dict[str, Any]] = []
+    _autonomy_event(
+        session,
+        event_type="autonomy_plan_started",
+        metadata={
+            "autonomy_session_id": session.session_id,
+            "plan_id": plan.plan_id,
+            "step_count": len(plan.steps),
+            "intent": str(envelope.get("intent", "")),
+        },
+    )
+    _emit_observability_event(
+        phase="phase15",
+        event_type="autonomy_plan_started",
+        metadata={
+            "autonomy_session_id": session.session_id,
+            "plan_id": plan.plan_id,
+            "step_count": len(plan.steps),
+        },
+    )
+
+    for step_index, step in enumerate(plan.steps):
+        if session is not _get_active_autonomy_session():
+            return _autonomy_terminated_response(
+                session=session,
+                envelope=envelope,
+                message="Autonomy terminated: session is no longer active.",
+                events=events,
+            )
+
+        allowed_step, violation_reason = _constraints_allow_step(session, step)
+        if not allowed_step:
+            _close_autonomy_session(
+                session,
+                reason="constraint_violation",
+                event_type="autonomy_constraint_violation",
+                metadata={
+                    "autonomy_session_id": session.session_id,
+                    "plan_id": plan.plan_id,
+                    "step_id": step.step_id,
+                    "tool_name": step.tool_contract.tool_name,
+                    "reason": violation_reason,
+                },
+            )
+            return _autonomy_terminated_response(
+                session=session,
+                envelope=envelope,
+                message=f"Autonomy terminated: {violation_reason}.",
+                events=events,
+            )
+
+        _autonomy_event(
+            session,
+            event_type="autonomy_step_executing",
+            metadata={
+                "autonomy_session_id": session.session_id,
+                "plan_id": plan.plan_id,
+                "step_id": step.step_id,
+                "tool_name": step.tool_contract.tool_name,
+            },
+        )
+        _emit_observability_event(
+            phase="phase15",
+            event_type="autonomy_step_executing",
+            metadata={
+                "autonomy_session_id": session.session_id,
+                "plan_id": plan.plan_id,
+                "step_id": step.step_id,
+                "tool_name": step.tool_contract.tool_name,
+            },
+        )
+        event = _execute_plan_step(step, plan_id=plan.plan_id, step_index=step_index)
+        session.actions_executed += 1
+        events.append(event)
+        _autonomy_event(
+            session,
+            event_type="autonomy_step_executed",
+            metadata={
+                "autonomy_session_id": session.session_id,
+                "plan_id": plan.plan_id,
+                "step_id": step.step_id,
+                "tool_name": step.tool_contract.tool_name,
+            },
+        )
+        _emit_observability_event(
+            phase="phase15",
+            event_type="autonomy_step_executed",
+            metadata={
+                "autonomy_session_id": session.session_id,
+                "plan_id": plan.plan_id,
+                "step_id": step.step_id,
+                "tool_name": step.tool_contract.tool_name,
+            },
+        )
+
+    _autonomy_event(
+        session,
+        event_type="autonomy_plan_completed",
+        metadata={
+            "autonomy_session_id": session.session_id,
+            "plan_id": plan.plan_id,
+            "executed_steps": len(events),
+        },
+    )
+    _emit_observability_event(
+        phase="phase15",
+        event_type="autonomy_plan_completed",
+        metadata={
+            "autonomy_session_id": session.session_id,
+            "plan_id": plan.plan_id,
+            "executed_steps": len(events),
+        },
+    )
+    return {
+        "type": "autonomy_executed",
+        "executed": bool(events),
+        "session_id": session.session_id,
+        "plan": _serialize_plan(plan),
+        "execution_events": events,
+        "message": "Autonomy execution completed within active scope and constraints.",
+    }
+
+
 def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
     global _pending_plan
     normalized = _normalize(utterance)
@@ -1879,11 +2458,6 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
             metadata={"utterance": normalized},
         )
         try:
-            if _phase8_enabled:
-                return _process_user_message_phase8(utterance)
-
-            global _pending_action
-
             if not _phase5_enabled:
                 envelope = interpret_utterance(utterance)
                 increment_metric("policy_decisions")
@@ -1903,6 +2477,15 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                     "envelope": envelope,
                     "message": "",
                 }
+
+            autonomy_result = _process_user_message_phase15(utterance)
+            if autonomy_result is not None:
+                return autonomy_result
+
+            if _phase8_enabled:
+                return _process_user_message_phase8(utterance)
+
+            global _pending_action
 
             if _pending_action is None:
                 if _is_deprecated_engineer_mode_input(normalized):

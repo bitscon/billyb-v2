@@ -1,11 +1,11 @@
 # Billy Maturity Snapshot
 
 ## Release
-- Tag: `maturity-level-11`
-- Status: `Level 11 - Control-Loop Safe Governed Agent` achieved
+- Tag: `maturity-level-15`
+- Status: `Level 15 - Bounded Autonomy, Human-Governed` achieved
 
 ## Current Maturity
-Billy is operating at Level 11 with end-to-end governed conversational routing and control-loop integrity.
+Billy is operating at Level 15 with governed conversational routing, approval-gated execution, and bounded opt-in autonomy.
 
 ## Phase Summary (1-9)
 1. `Phase 1 - Deterministic Interpreter`
@@ -48,6 +48,9 @@ Frozen UX/governance infrastructure. No legacy mode revival or shortcut authorit
 
 ## Maturity Level 11 — LLM Boundary & Control Loop Integrity (Frozen)
 LLM output is now strictly a subroutine under governed orchestration: every conversational turn re-enters `process_user_message(...)`, no terminal chat mode is created by freeform replies, and subsequent operational or ambiguous inputs continue through the same policy/approval/clarify pipeline without legacy fallback takeover.
+
+## Maturity Level 15 — Bounded Autonomy, Human-Governed (Frozen)
+Opt-in bounded autonomy with deterministic scope, explicit constraints, policy-preserving execution, full audit/replay coverage, and immediate human revocation via kill switch.
 
 ## Freeze Policy
 Once a phase is approved and frozen:
