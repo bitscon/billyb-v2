@@ -1,0 +1,17 @@
+{
+  "input": "qzv blorp",
+  "expected_envelope": {
+    "utterance": "qzv blorp",
+    "lane": "CLARIFY",
+    "intent": "clarify.request_context",
+    "entities": [],
+    "confidence": 0.22,
+    "requires_approval": false,
+    "policy": {
+      "risk_level": "low",
+      "allowed": true,
+      "reason": "Ambiguous input requires clarification before any route selection."
+    },
+    "next_prompt": "Can you clarify what outcome you want?"
+  }
+}

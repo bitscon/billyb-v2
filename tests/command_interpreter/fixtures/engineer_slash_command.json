@@ -1,0 +1,17 @@
+{
+  "input": "/engineer",
+  "expected_envelope": {
+    "utterance": "/engineer",
+    "lane": "ENGINEER",
+    "intent": "engineer.enter_mode",
+    "entities": [],
+    "confidence": 0.99,
+    "requires_approval": false,
+    "policy": {
+      "risk_level": "low",
+      "allowed": true,
+      "reason": "Explicit engineering-mode intent without execution side effects."
+    },
+    "next_prompt": "What engineering problem should be analyzed?"
+  }
+}

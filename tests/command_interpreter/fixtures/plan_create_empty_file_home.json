@@ -1,0 +1,27 @@
+{
+  "input": "create an empty text file in your home directory",
+  "expected_envelope": {
+    "utterance": "create an empty text file in your home directory",
+    "lane": "PLAN",
+    "intent": "plan.create_empty_file",
+    "entities": [
+      {
+        "name": "target_location",
+        "value": "home directory",
+        "normalized": "$HOME"
+      },
+      {
+        "name": "file_state",
+        "value": "empty"
+      }
+    ],
+    "confidence": 0.95,
+    "requires_approval": true,
+    "policy": {
+      "risk_level": "medium",
+      "allowed": true,
+      "reason": "State-changing request requires explicit approval before any execution path."
+    },
+    "next_prompt": "What filename should be used in the home directory?"
+  }
+}

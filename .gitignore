@@ -10,5 +10,7 @@ v2/var/
 venv/
 v2/.venv/
 
-# Local docs scratch
-/docs/
+# Local docs scratch (keep all docs ignored except command-interpreter spec)
+/docs/*
+!/docs/command-interpreter/
+!/docs/command-interpreter/**

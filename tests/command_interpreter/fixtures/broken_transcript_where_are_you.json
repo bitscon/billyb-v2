@@ -1,0 +1,17 @@
+{
+  "input": "where are you?",
+  "expected_envelope": {
+    "utterance": "where are you?",
+    "lane": "CHAT",
+    "intent": "chat.identity_location_question",
+    "entities": [],
+    "confidence": 0.93,
+    "requires_approval": false,
+    "policy": {
+      "risk_level": "low",
+      "allowed": true,
+      "reason": "Identity/context question; must not trigger service inspection or execution paths."
+    },
+    "next_prompt": ""
+  }
+}

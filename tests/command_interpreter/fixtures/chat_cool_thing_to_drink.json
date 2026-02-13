@@ -1,0 +1,17 @@
+{
+  "input": "what is a cool thing to drink?",
+  "expected_envelope": {
+    "utterance": "what is a cool thing to drink?",
+    "lane": "CHAT",
+    "intent": "chat.recommend_drink",
+    "entities": [],
+    "confidence": 0.96,
+    "requires_approval": false,
+    "policy": {
+      "risk_level": "low",
+      "allowed": true,
+      "reason": "Benign conversational recommendation request."
+    },
+    "next_prompt": ""
+  }
+}
