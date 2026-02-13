@@ -12,10 +12,12 @@ from __future__ import annotations
 import copy
 import json
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
+import time
 from typing import Any, Callable, Dict, List, Protocol
 import uuid
 
@@ -29,6 +31,14 @@ from v2.core.command_memory import (
     MemoryEvent,
     MemoryStore,
 )
+from v2.core.metrics import MetricsSummary, get_metrics_summary, increment_metric, record_latency_ms, reset_metrics
+from v2.core.observability import (
+    ensure_observability_context,
+    log_telemetry_event,
+    observability_turn,
+    reset_telemetry_events,
+)
+from v2.core.trace_report import TraceReport, build_trace_report
 
 
 Lane = str
@@ -204,6 +214,22 @@ _tool_invoker: ToolInvoker = StubToolInvoker()
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _emit_observability_event(phase: str, event_type: str, metadata: Dict[str, Any] | None = None) -> None:
+    log_telemetry_event(phase=phase, event_type=event_type, metadata=metadata or {})
+
+
+def _envelope_pointer(envelope: Envelope) -> Dict[str, Any]:
+    policy = envelope.get("policy", {}) if isinstance(envelope.get("policy"), dict) else {}
+    return {
+        "lane": str(envelope.get("lane", "")),
+        "intent": str(envelope.get("intent", "")),
+        "requires_approval": bool(envelope.get("requires_approval", False)),
+        "policy_allowed": bool(policy.get("allowed", False)),
+        "policy_risk_level": str(policy.get("risk_level", "")),
+        "entity_count": len(envelope.get("entities", [])) if isinstance(envelope.get("entities"), list) else 0,
+    }
 
 
 def _is_deprecated_engineer_mode_input(text: str) -> bool:
@@ -948,6 +974,283 @@ def get_memory_events_by_tool(tool_name: str) -> List[Dict[str, Any]]:
     return [event.to_dict() for event in _memory_store.get_by_tool(tool_name)]
 
 
+def get_observability_trace(session_id: str) -> TraceReport:
+    from v2.core.observability import get_session_events
+
+    return build_trace_report(session_id=session_id, events=get_session_events(session_id))
+
+
+def get_observability_metrics() -> MetricsSummary:
+    return get_metrics_summary()
+
+
+def reset_observability_state() -> None:
+    reset_telemetry_events()
+    reset_metrics()
+
+
+def _memory_events_filtered(
+    *,
+    limit: int = 50,
+    intent: str | None = None,
+    tool_name: str | None = None,
+) -> List[Dict[str, Any]]:
+    if intent and tool_name:
+        by_intent = _memory_store.get_by_intent(intent)
+        by_tool = _memory_store.get_by_tool(tool_name)
+        by_tool_tuples = {
+            (event.timestamp, event.intent, event.tool_name, event.success) for event in by_tool
+        }
+        filtered = [
+            event
+            for event in by_intent
+            if (event.timestamp, event.intent, event.tool_name, event.success) in by_tool_tuples
+        ]
+    elif intent:
+        filtered = _memory_store.get_by_intent(intent)
+    elif tool_name:
+        filtered = _memory_store.get_by_tool(tool_name)
+    else:
+        filtered = _memory_store.get_last(limit if limit > 0 else 0)
+
+    serialized = [event.to_dict() for event in filtered]
+    if limit > 0:
+        return serialized[-limit:]
+    return serialized
+
+
+def get_memory_advisory_summary(
+    *,
+    limit: int = 50,
+    intent: str | None = None,
+    tool_name: str | None = None,
+) -> Dict[str, Any]:
+    events = _memory_events_filtered(limit=limit, intent=intent, tool_name=tool_name)
+    success_count = sum(1 for event in events if bool(event.get("success")))
+    failure_count = len(events) - success_count
+    success_rate = round((success_count / len(events)), 2) if events else 0.0
+
+    by_intent: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"intent": "", "count": 0, "success_count": 0, "failure_count": 0}
+    )
+    by_tool: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"tool_name": "", "count": 0, "success_count": 0, "failure_count": 0}
+    )
+
+    for event in events:
+        event_intent = str(event.get("intent", "unknown.intent"))
+        event_tool = str(event.get("tool_name", "unknown.tool"))
+        event_success = bool(event.get("success"))
+
+        intent_bucket = by_intent[event_intent]
+        intent_bucket["intent"] = event_intent
+        intent_bucket["count"] += 1
+        if event_success:
+            intent_bucket["success_count"] += 1
+        else:
+            intent_bucket["failure_count"] += 1
+
+        tool_bucket = by_tool[event_tool]
+        tool_bucket["tool_name"] = event_tool
+        tool_bucket["count"] += 1
+        if event_success:
+            tool_bucket["success_count"] += 1
+        else:
+            tool_bucket["failure_count"] += 1
+
+    if not events:
+        suggestions = ["Suggestion: No execution history found yet; collect more approved runs before drawing conclusions."]
+    elif failure_count > 0:
+        suggestions = [
+            "Suggestion: Review failing intents/tools before approving similar actions.",
+            "Suggestion: Keep approval gating explicit; advisory insights never replace approval.",
+        ]
+    else:
+        suggestions = [
+            "Suggestion: Recent runs are successful; continue using explicit approvals for repeatable safety.",
+        ]
+
+    return {
+        "type": "memory_advisory_summary",
+        "advisory_only": True,
+        "filters": {
+            "limit": limit,
+            "intent": intent,
+            "tool_name": tool_name,
+        },
+        "events_considered": len(events),
+        "outcomes": {
+            "success_count": success_count,
+            "failure_count": failure_count,
+            "success_rate": success_rate,
+        },
+        "by_intent": sorted(by_intent.values(), key=lambda item: str(item["intent"])),
+        "by_tool": sorted(by_tool.values(), key=lambda item: str(item["tool_name"])),
+        "recent_events": events[-5:],
+        "suggestions": suggestions,
+        "safety_note": "Advisory only: this summary does not change policy, approval, or execution behavior.",
+    }
+
+
+def get_memory_pattern_insights(*, limit: int = 50) -> Dict[str, Any]:
+    events = _memory_events_filtered(limit=limit)
+    patterns: List[Dict[str, Any]] = []
+
+    if not events:
+        patterns.append(
+            {
+                "pattern": "No historical execution events.",
+                "suggestion": "Suggestion: Run approved actions first to build advisory context.",
+            }
+        )
+    else:
+        recent_intents = [str(event.get("intent", "unknown.intent")) for event in events[-3:]]
+        if len(recent_intents) == 3 and len(set(recent_intents)) == 1:
+            patterns.append(
+                {
+                    "pattern": f"Last three executions used intent `{recent_intents[0]}`.",
+                    "suggestion": "Suggestion: If repeating this action, verify parameters before approving again.",
+                }
+            )
+
+        failures = [event for event in events if not bool(event.get("success"))]
+        if failures:
+            latest_failure = failures[-1]
+            patterns.append(
+                {
+                    "pattern": (
+                        f"Recent failure observed for intent `{latest_failure.get('intent', 'unknown.intent')}` "
+                        f"with tool `{latest_failure.get('tool_name', 'unknown.tool')}`."
+                    ),
+                    "suggestion": "Suggestion: Inspect failure details and adjust inputs before the next approval.",
+                }
+            )
+
+        if not patterns:
+            patterns.append(
+                {
+                    "pattern": "No high-risk trend detected in recent history.",
+                    "suggestion": "Suggestion: Continue explicit approvals and monitor outcomes over time.",
+                }
+            )
+
+    return {
+        "type": "memory_pattern_insights",
+        "advisory_only": True,
+        "events_considered": len(events),
+        "patterns": patterns,
+        "safety_note": "Advisory only: pattern insights cannot trigger or authorize any action.",
+    }
+
+
+def _call_llm_for_memory_advisory_json(summary: Dict[str, Any], patterns: Dict[str, Any]) -> Dict[str, Any] | None:
+    model_config = _load_model_config()
+    if llm_api is None or not model_config:
+        return None
+
+    prompt_payload = {
+        "summary": summary,
+        "patterns": patterns,
+        "instructions": {
+            "task": "Provide a concise advisory explanation of historical patterns.",
+            "must_not_suggest_automatic_actions": True,
+            "output_format": {
+                "explanation": "string",
+                "suggestions": ["string"],
+            },
+        },
+    }
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Return JSON only with keys: explanation, suggestions. "
+                "Suggestions must be advisory and must not imply automatic execution."
+            ),
+        },
+        {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=True)},
+    ]
+    try:
+        raw = llm_api.get_completion(messages, model_config)
+    except Exception:
+        return None
+    if not isinstance(raw, str):
+        return None
+    try:
+        payload = json.loads(raw.strip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _normalize_llm_advisory_payload(payload: Any) -> Dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    explanation = payload.get("explanation")
+    suggestions = payload.get("suggestions")
+    if not isinstance(explanation, str) or not explanation.strip():
+        return None
+    if not isinstance(suggestions, list):
+        return None
+    normalized_suggestions: List[str] = []
+    for item in suggestions:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if not text:
+            continue
+        if not text.lower().startswith("suggestion:"):
+            text = f"Suggestion: {text}"
+        normalized_suggestions.append(text)
+    return {
+        "explanation": explanation.strip(),
+        "suggestions": normalized_suggestions,
+    }
+
+
+def get_memory_advisory_report(
+    *,
+    limit: int = 50,
+    intent: str | None = None,
+    tool_name: str | None = None,
+    llm_explainer: Callable[[Dict[str, Any], Dict[str, Any]], Any] | None = None,
+) -> Dict[str, Any]:
+    summary = get_memory_advisory_summary(limit=limit, intent=intent, tool_name=tool_name)
+    patterns = get_memory_pattern_insights(limit=limit)
+    llm_payload: Dict[str, Any] | None = None
+
+    if llm_explainer is not None:
+        try:
+            llm_payload = _normalize_llm_advisory_payload(llm_explainer(summary, patterns))
+        except Exception:
+            llm_payload = None
+    else:
+        llm_payload = _normalize_llm_advisory_payload(_call_llm_for_memory_advisory_json(summary, patterns))
+
+    if llm_payload is None:
+        llm_payload = {
+            "explanation": (
+                "Historical execution data is advisory context only; approvals and policy gates remain unchanged."
+            ),
+            "suggestions": [
+                "Suggestion: Use these insights to guide human approvals, not to skip approval steps.",
+            ],
+        }
+
+    return {
+        "type": "memory_advisory_report",
+        "advisory_only": True,
+        "summary": summary,
+        "patterns": patterns,
+        "llm_context": llm_payload,
+        "safety_note": (
+            "Advisory only: this report cannot modify interpreter routing, policy decisions, or execution authority."
+        ),
+    }
+
+
 def reset_phase7_memory() -> None:
     _memory_store.clear()
 
@@ -1005,6 +1308,7 @@ def reset_phase5_state() -> None:
     reset_phase8_state()
     _execution_events = []
     reset_phase7_memory()
+    reset_observability_state()
     if isinstance(_tool_invoker, StubToolInvoker):
         _tool_invoker.reset()
 
@@ -1070,13 +1374,17 @@ def _plan_risk_summary(plan: ExecutionPlan) -> str:
 
 
 def build_execution_plan(envelope: Envelope) -> ExecutionPlan:
+    increment_metric("plan_building_calls")
+    started = time.perf_counter()
     if not _is_actionable_envelope(envelope):
+        record_latency_ms("plan_building_latency_ms", (time.perf_counter() - started) * 1000.0)
         raise ValueError("Envelope is not actionable for planning.")
 
     utterance = str(envelope.get("utterance", ""))
     fallback_intent = str(envelope.get("intent", ""))
     clauses = _split_plan_clauses(utterance)
     if not clauses:
+        record_latency_ms("plan_building_latency_ms", (time.perf_counter() - started) * 1000.0)
         raise ValueError("No actionable plan steps found in utterance.")
 
     steps: List[PlanStep] = []
@@ -1085,9 +1393,11 @@ def build_execution_plan(envelope: Envelope) -> ExecutionPlan:
         if step_intent is None and len(clauses) == 1 and fallback_intent and _resolve_tool_contract(fallback_intent):
             step_intent = fallback_intent
         if step_intent is None:
+            record_latency_ms("plan_building_latency_ms", (time.perf_counter() - started) * 1000.0)
             raise ValueError(f"Unmappable plan step: {clause}")
         contract = _resolve_tool_contract(step_intent)
         if contract is None:
+            record_latency_ms("plan_building_latency_ms", (time.perf_counter() - started) * 1000.0)
             raise ValueError(f"No tool contract found for step intent: {step_intent}")
 
         step_envelope = copy.deepcopy(envelope)
@@ -1108,11 +1418,22 @@ def build_execution_plan(envelope: Envelope) -> ExecutionPlan:
             )
         )
 
-    return ExecutionPlan(
+    plan = ExecutionPlan(
         plan_id=f"plan-{uuid.uuid4()}",
         intent=fallback_intent or "plan.user_action_request",
         steps=steps,
     )
+    record_latency_ms("plan_building_latency_ms", (time.perf_counter() - started) * 1000.0)
+    _emit_observability_event(
+        phase="phase8",
+        event_type="plan_constructed",
+        metadata={
+            "step_count": len(plan.steps),
+            "step_ids": [step.step_id for step in plan.steps],
+            "step_intents": [step.tool_contract.intent for step in plan.steps],
+        },
+    )
+    return plan
 
 
 def _create_pending_plan(plan: ExecutionPlan) -> PendingPlan:
@@ -1212,13 +1533,33 @@ def _record_memory_event(
     )
     try:
         _memory_store.append(event)
+        _emit_observability_event(
+            phase="phase7",
+            event_type="memory_recorded",
+            metadata={
+                "intent": intent,
+                "tool_name": tool_name,
+                "success": bool(success),
+            },
+        )
     except Exception:
+        _emit_observability_event(
+            phase="phase7",
+            event_type="memory_record_failed",
+            metadata={
+                "intent": intent,
+                "tool_name": tool_name,
+                "success": bool(success),
+            },
+        )
         # Memory recording must never change execution behavior.
         return
 
 
 def execute_pending_action(action_id: str) -> Dict[str, Any]:
     global _pending_action, _execution_events
+    increment_metric("execution_attempts")
+    started = time.perf_counter()
     snapshot = copy.deepcopy(_pending_action.envelope_snapshot) if _pending_action else None
     contract = _pending_action.resolved_tool_contract if _pending_action else None
     parameters: Dict[str, Any] = {}
@@ -1239,6 +1580,15 @@ def execute_pending_action(action_id: str) -> Dict[str, Any]:
             raise ValueError("No tool contract resolved for pending action.")
 
         parameters = _tool_parameters_from_envelope(contract, _pending_action.envelope_snapshot)
+        _emit_observability_event(
+            phase="phase6",
+            event_type="tool_invocation_attempt",
+            metadata={
+                "intent": contract.intent,
+                "tool_name": contract.tool_name,
+                "parameter_keys": sorted(parameters.keys()),
+            },
+        )
         result = _tool_invoker.invoke(contract, parameters)
 
         event = {
@@ -1265,6 +1615,17 @@ def execute_pending_action(action_id: str) -> Dict[str, Any]:
             execution_result=result,
             success=True,
         )
+        _emit_observability_event(
+            phase="phase6",
+            event_type="tool_invocation_result",
+            metadata={
+                "intent": contract.intent,
+                "tool_name": contract.tool_name,
+                "status": str(result.get("status", "unknown")),
+                "success": True,
+            },
+        )
+        record_latency_ms("execution_attempt_latency_ms", (time.perf_counter() - started) * 1000.0)
         return copy.deepcopy(event)
     except Exception as exc:
         _record_memory_event(
@@ -1274,6 +1635,17 @@ def execute_pending_action(action_id: str) -> Dict[str, Any]:
             execution_result={"error": str(exc)},
             success=False,
         )
+        _emit_observability_event(
+            phase="phase6",
+            event_type="tool_invocation_result",
+            metadata={
+                "intent": contract.intent if contract is not None else "unknown.intent",
+                "tool_name": contract.tool_name if contract is not None else "unknown.tool",
+                "success": False,
+                "error": str(exc),
+            },
+        )
+        record_latency_ms("execution_attempt_latency_ms", (time.perf_counter() - started) * 1000.0)
         raise
 
 
@@ -1346,6 +1718,17 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
 
         routed_utterance = _phase9_normalize_utterance(normalized)
         envelope = interpret_utterance(routed_utterance)
+        increment_metric("policy_decisions")
+        _emit_observability_event(
+            phase="phase1-4",
+            event_type="utterance_interpreted",
+            metadata=_envelope_pointer(envelope),
+        )
+        _emit_observability_event(
+            phase="phase4",
+            event_type="policy_evaluated",
+            metadata=_envelope_pointer(envelope),
+        )
         if not _is_actionable_envelope(envelope):
             return {
                 "type": "no_action",
@@ -1365,6 +1748,15 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
             }
 
         _pending_plan = _create_pending_plan(plan)
+        _emit_observability_event(
+            phase="phase5",
+            event_type="approval_requested",
+            metadata={
+                "approval_scope": "plan" if _phase8_approval_mode == "plan" else "step",
+                "plan_id": plan.plan_id,
+                "step_count": len(plan.steps),
+            },
+        )
         return {
             "type": "plan_approval_required",
             "executed": False,
@@ -1373,6 +1765,15 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
         }
 
     if _pending_plan_is_expired(_pending_plan):
+        _emit_observability_event(
+            phase="phase5",
+            event_type="approval_response",
+            metadata={
+                "accepted": False,
+                "approval_scope": "plan" if _phase8_approval_mode == "plan" else "step",
+                "reason": "pending_plan_expired",
+            },
+        )
         _pending_plan = None
         return {
             "type": "approval_expired",
@@ -1381,6 +1782,15 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
         }
 
     if not _pending_plan.awaiting_next_user_turn:
+        _emit_observability_event(
+            phase="phase5",
+            event_type="approval_response",
+            metadata={
+                "accepted": False,
+                "approval_scope": "plan" if _phase8_approval_mode == "plan" else "step",
+                "reason": "approval_window_closed",
+            },
+        )
         return {
             "type": "approval_rejected",
             "executed": False,
@@ -1389,6 +1799,15 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
 
     _pending_plan.awaiting_next_user_turn = False
     if not _is_valid_approval_phrase(normalized):
+        _emit_observability_event(
+            phase="phase5",
+            event_type="approval_response",
+            metadata={
+                "accepted": False,
+                "approval_scope": "plan" if _phase8_approval_mode == "plan" else "step",
+                "reason": "explicit_phrase_required",
+            },
+        )
         _pending_plan = None
         return {
             "type": "approval_rejected",
@@ -1396,6 +1815,14 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
             "message": "Approval rejected: explicit phrase required. Re-submit the action request.",
         }
 
+    _emit_observability_event(
+        phase="phase5",
+        event_type="approval_response",
+        metadata={
+            "accepted": True,
+            "approval_scope": "plan" if _phase8_approval_mode == "plan" else "step",
+        },
+    )
     try:
         result = _execute_plan_steps_from_pending()
     except Exception as exc:
@@ -1442,95 +1869,174 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
     This function keeps Phases 1-4 authoritative for interpretation and policy.
     It only adds explicit conversational approval and single-use execution gating.
     """
-    if _phase8_enabled:
-        return _process_user_message_phase8(utterance)
+    with ensure_observability_context():
+        increment_metric("interpreter_calls")
+        started = time.perf_counter()
+        normalized = _normalize(utterance)
+        _emit_observability_event(
+            phase="phase1-4",
+            event_type="utterance_received",
+            metadata={"utterance": normalized},
+        )
+        try:
+            if _phase8_enabled:
+                return _process_user_message_phase8(utterance)
 
-    global _pending_action
-    normalized = _normalize(utterance)
+            global _pending_action
 
-    if not _phase5_enabled:
-        return {
-            "type": "phase5_disabled",
-            "executed": False,
-            "envelope": interpret_utterance(utterance),
-            "message": "",
-        }
+            if not _phase5_enabled:
+                envelope = interpret_utterance(utterance)
+                increment_metric("policy_decisions")
+                _emit_observability_event(
+                    phase="phase1-4",
+                    event_type="utterance_interpreted",
+                    metadata=_envelope_pointer(envelope),
+                )
+                _emit_observability_event(
+                    phase="phase4",
+                    event_type="policy_evaluated",
+                    metadata=_envelope_pointer(envelope),
+                )
+                return {
+                    "type": "phase5_disabled",
+                    "executed": False,
+                    "envelope": envelope,
+                    "message": "",
+                }
 
-    if _pending_action is None:
-        if _is_deprecated_engineer_mode_input(normalized):
-            return _phase9_engineer_mode_info_response(normalized)
+            if _pending_action is None:
+                if _is_deprecated_engineer_mode_input(normalized):
+                    return _phase9_engineer_mode_info_response(normalized)
 
-        if _is_valid_approval_phrase(normalized):
+                if _is_valid_approval_phrase(normalized):
+                    _emit_observability_event(
+                        phase="phase5",
+                        event_type="approval_response",
+                        metadata={
+                            "accepted": False,
+                            "reason": "no_pending_action",
+                        },
+                    )
+                    return {
+                        "type": "approval_rejected",
+                        "executed": False,
+                        "message": "Approval rejected: no pending action to approve.",
+                    }
+
+                routed_utterance = _phase9_normalize_utterance(normalized)
+                envelope = interpret_utterance(routed_utterance)
+                increment_metric("policy_decisions")
+                _emit_observability_event(
+                    phase="phase1-4",
+                    event_type="utterance_interpreted",
+                    metadata=_envelope_pointer(envelope),
+                )
+                _emit_observability_event(
+                    phase="phase4",
+                    event_type="policy_evaluated",
+                    metadata=_envelope_pointer(envelope),
+                )
+                if not _is_actionable_envelope(envelope):
+                    return {
+                        "type": "no_action",
+                        "executed": False,
+                        "envelope": envelope,
+                        "message": "",
+                    }
+
+                _pending_action = _create_pending_action(envelope)
+                _emit_observability_event(
+                    phase="phase5",
+                    event_type="approval_requested",
+                    metadata={
+                        "approval_scope": "single_action",
+                        "intent": str(envelope.get("intent", "unknown.intent")),
+                    },
+                )
+                return {
+                    "type": "approval_required",
+                    "executed": False,
+                    "action_id": _pending_action.action_id,
+                    "envelope": copy.deepcopy(envelope),
+                    "message": _approval_request_message(_pending_action),
+                }
+
+            # There is a pending action: this is the approval turn.
+            if _pending_is_expired(_pending_action):
+                _emit_observability_event(
+                    phase="phase5",
+                    event_type="approval_response",
+                    metadata={
+                        "accepted": False,
+                        "reason": "pending_action_expired",
+                    },
+                )
+                _pending_action = None
+                return {
+                    "type": "approval_expired",
+                    "executed": False,
+                    "message": "Approval rejected: pending action expired. Re-submit the action request.",
+                }
+
+            if not _pending_action.awaiting_next_user_turn:
+                _emit_observability_event(
+                    phase="phase5",
+                    event_type="approval_response",
+                    metadata={
+                        "accepted": False,
+                        "reason": "approval_window_closed",
+                    },
+                )
+                return {
+                    "type": "approval_rejected",
+                    "executed": False,
+                    "message": "Approval rejected: approval window closed. Re-submit the action request.",
+                }
+
+            _pending_action.awaiting_next_user_turn = False
+            if not _is_valid_approval_phrase(normalized):
+                _emit_observability_event(
+                    phase="phase5",
+                    event_type="approval_response",
+                    metadata={
+                        "accepted": False,
+                        "reason": "explicit_phrase_required",
+                    },
+                )
+                _pending_action = None
+                return {
+                    "type": "approval_rejected",
+                    "executed": False,
+                    "message": "Approval rejected: explicit phrase required. Re-submit the action request.",
+                }
+
+            _emit_observability_event(
+                phase="phase5",
+                event_type="approval_response",
+                metadata={"accepted": True, "approval_scope": "single_action"},
+            )
+            action_id = _pending_action.action_id
+            try:
+                event = execute_pending_action(action_id)
+            except Exception as exc:
+                _pending_action = None
+                return {
+                    "type": "execution_rejected",
+                    "executed": False,
+                    "action_id": action_id,
+                    "message": f"Execution rejected: {exc}",
+                }
+
+            _pending_action = None
             return {
-                "type": "approval_rejected",
-                "executed": False,
-                "message": "Approval rejected: no pending action to approve.",
+                "type": "executed",
+                "executed": True,
+                "action_id": action_id,
+                "execution_event": event,
+                "message": "Execution accepted and completed once.",
             }
-
-        routed_utterance = _phase9_normalize_utterance(normalized)
-        envelope = interpret_utterance(routed_utterance)
-        if not _is_actionable_envelope(envelope):
-            return {
-                "type": "no_action",
-                "executed": False,
-                "envelope": envelope,
-                "message": "",
-            }
-
-        _pending_action = _create_pending_action(envelope)
-        return {
-            "type": "approval_required",
-            "executed": False,
-            "action_id": _pending_action.action_id,
-            "envelope": copy.deepcopy(envelope),
-            "message": _approval_request_message(_pending_action),
-        }
-
-    # There is a pending action: this is the approval turn.
-    if _pending_is_expired(_pending_action):
-        _pending_action = None
-        return {
-            "type": "approval_expired",
-            "executed": False,
-            "message": "Approval rejected: pending action expired. Re-submit the action request.",
-        }
-
-    if not _pending_action.awaiting_next_user_turn:
-        return {
-            "type": "approval_rejected",
-            "executed": False,
-            "message": "Approval rejected: approval window closed. Re-submit the action request.",
-        }
-
-    _pending_action.awaiting_next_user_turn = False
-    if not _is_valid_approval_phrase(normalized):
-        _pending_action = None
-        return {
-            "type": "approval_rejected",
-            "executed": False,
-            "message": "Approval rejected: explicit phrase required. Re-submit the action request.",
-        }
-
-    action_id = _pending_action.action_id
-    try:
-        event = execute_pending_action(action_id)
-    except Exception as exc:
-        _pending_action = None
-        return {
-            "type": "execution_rejected",
-            "executed": False,
-            "action_id": action_id,
-            "message": f"Execution rejected: {exc}",
-        }
-
-    _pending_action = None
-    return {
-        "type": "executed",
-        "executed": True,
-        "action_id": action_id,
-        "execution_event": event,
-        "message": "Execution accepted and completed once.",
-    }
+        finally:
+            record_latency_ms("interpreter_call_latency_ms", (time.perf_counter() - started) * 1000.0)
 
 
 def _phase10_default_freeform_response(utterance: str, _envelope: Envelope) -> str:
@@ -1592,6 +2098,7 @@ def _phase10_response_text(
 def process_conversational_turn(
     utterance: str,
     *,
+    session_id: str | None = None,
     llm_responder: Callable[[str, Envelope], str] | None = None,
 ) -> Dict[str, Any]:
     """Phase 10 conversational entrypoint.
@@ -1599,14 +2106,30 @@ def process_conversational_turn(
     Every turn is governed by process_user_message(...). Freeform text generation
     is a subroutine that cannot capture conversational control state.
     """
-    governed_result = process_user_message(utterance)
-    response_text = _phase10_response_text(
-        utterance=utterance,
-        governed_result=governed_result,
-        llm_responder=llm_responder,
-    )
-    return {
-        "response": response_text,
-        "next_state": "ready_for_input",
-        "governed_result": governed_result,
-    }
+    with observability_turn(session_id=session_id) as (resolved_session_id, resolved_correlation_id):
+        _emit_observability_event(
+            phase="phase10",
+            event_type="conversational_turn_started",
+            metadata={"utterance": utterance},
+        )
+        governed_result = process_user_message(utterance)
+        response_text = _phase10_response_text(
+            utterance=utterance,
+            governed_result=governed_result,
+            llm_responder=llm_responder,
+        )
+        _emit_observability_event(
+            phase="phase10",
+            event_type="conversational_turn_completed",
+            metadata={
+                "result_type": str(governed_result.get("type", "")),
+                "response": response_text,
+            },
+        )
+        return {
+            "response": response_text,
+            "next_state": "ready_for_input",
+            "governed_result": governed_result,
+            "session_id": resolved_session_id,
+            "correlation_id": resolved_correlation_id,
+        }
