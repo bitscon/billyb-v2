@@ -4,8 +4,8 @@ Billy is a protocol-driven assistant with explicit authority boundaries.
 All user input is processed through a governed conversational pipeline.
 
 ## Current Status
-- Maturity Level: 10 (`Unified Conversational Governance`)
-- Infrastructure freeze: Phases 1-9 are frozen unless explicitly promoted
+- Maturity Level: 16 (`Explicit Content Capture`)
+- Infrastructure freeze: Phases 1-16 are frozen unless explicitly promoted
 - Conversational behavior: natural language is first-class; legacy engineer mode is deprecated
 
 ## How to Use
@@ -14,6 +14,8 @@ Use normal language. Billy routes requests through interpretation, policy, appro
 Examples:
 - `save that joke in a text file in your home directory`
 - `create an empty text file in your home directory`
+- `remember the last response as rome_fact`
+- `save that rome_fact in a text file in your home directory`
 
 Execution flow:
 1. Billy interprets your message into an intent envelope.
@@ -31,6 +33,12 @@ Approval phrases (exact match, case-insensitive):
 Ambiguous input behavior:
 - Ambiguous input routes to `CLARIFY` with a follow-up question.
 - Normal language is not rejected as a legacy interaction.
+
+Content capture behavior:
+- Capture is explicit and user-initiated only (`capture this`, `store this content with label X`, `remember the last response as X`).
+- Captured content is stored with `content_id`, source, timestamp, and turn correlation metadata.
+- References can use `content_id` (for example `cc-...`) or label (`that <label>`).
+- Ambiguous labels are rejected; Billy does not guess.
 
 ## Deprecated Inputs
 The following are informational only and do not gate behavior:
@@ -64,5 +72,12 @@ Implemented and frozen progression:
 - Phase 7: append-only execution memory + recall
 - Phase 8: approval-gated multi-step planning
 - Phase 9: conversational entrypoint unification
+- Phase 10: LLM boundary and control-loop integrity
+- Phase 11: internal maturity promotion and freeze hardening
+- Phase 12: memory-driven advisory insights (non-authoritative)
+- Phase 13: observability + replay debugging
+- Phase 14: policy/contract evolution workflows (human-governed)
+- Phase 15: bounded autonomy (opt-in, scoped, revocable)
+- Phase 16: explicit content capture and reference resolution
 
 See `MATURITY.md` for freeze policy, docs gate, and promotion state.

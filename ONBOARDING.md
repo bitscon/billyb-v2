@@ -9,12 +9,13 @@ Before doing work, read these files in order:
 4. `STATE.md`
 5. `MATURITY.md`
 
-## 3. Current Operating Model (Level 10)
+## 3. Current Operating Model (Level 16)
 - Talk to Billy in normal language.
 - Billy routes every message through governed interpretation and policy.
 - Action requests do not execute immediately; Billy requests explicit approval.
 - Approval must use an allowed exact phrase.
 - Ambiguous requests route to `CLARIFY`.
+- Content must be explicitly captured before later references like `that <label>`.
 
 ## 4. Approval Rules (Exact)
 Allowed approval phrases (case-insensitive exact match):
@@ -50,6 +51,14 @@ Billy: returns `CLARIFY` with a follow-up question
 ### Example C: Deprecated mode input
 User: `/engineer`
 Billy: informational deprecation message; governed routing remains active
+
+### Example D: Explicit content capture + reuse
+User: `tell me a fun fact about Rome`
+Billy: returns fact text
+User: `remember the last response as rome_fact`
+Billy: confirms captured content with an ID
+User: `save that rome_fact in a text file in your home directory`
+Billy: approval request through governed execution path
 
 ## 7. Freeze and Promotion Rule
 Phases approved as frozen infrastructure must not be tuned implicitly.

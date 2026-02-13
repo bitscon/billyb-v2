@@ -1,11 +1,11 @@
 # Billy Maturity Snapshot
 
 ## Release
-- Tag: `maturity-level-15`
-- Status: `Level 15 - Bounded Autonomy, Human-Governed` achieved
+- Tag: `maturity-level-16`
+- Status: `Level 16 - Explicit Content Capture` achieved
 
 ## Current Maturity
-Billy is operating at Level 15 with governed conversational routing, approval-gated execution, and bounded opt-in autonomy.
+Billy is operating at Level 16 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, and explicit content capture.
 
 ## Phase Summary (1-9)
 1. `Phase 1 - Deterministic Interpreter`
@@ -51,6 +51,9 @@ LLM output is now strictly a subroutine under governed orchestration: every conv
 
 ## Maturity Level 15 — Bounded Autonomy, Human-Governed (Frozen)
 Opt-in bounded autonomy with deterministic scope, explicit constraints, policy-preserving execution, full audit/replay coverage, and immediate human revocation via kill switch.
+
+## Maturity Level 16 — Explicit Content Capture (Frozen)
+Explicit user-initiated capture of assistant output into auditable content objects (`content_id`, label, source, turn correlation) with deterministic reference resolution by `content_id` or label and ambiguity rejection.
 
 ## Freeze Policy
 Once a phase is approved and frozen:

@@ -25,6 +25,12 @@ import jsonschema
 import yaml
 
 from v2.core import llm_api
+from v2.core.content_capture import (
+    CapturedContent,
+    ContentCaptureStore,
+    FileBackedContentCaptureStore,
+    InMemoryContentCaptureStore,
+)
 from v2.core.command_memory import (
     FileBackedMemoryStore,
     InMemoryMemoryStore,
@@ -34,6 +40,7 @@ from v2.core.command_memory import (
 from v2.core.metrics import MetricsSummary, get_metrics_summary, increment_metric, record_latency_ms, reset_metrics
 from v2.core.observability import (
     current_correlation_id,
+    current_session_id,
     ensure_observability_context,
     log_telemetry_event,
     observability_turn,
@@ -181,10 +188,13 @@ class AutonomySession:
 _pending_action: PendingAction | None = None
 _execution_events: List[Dict[str, Any]] = []
 _memory_store: MemoryStore = InMemoryMemoryStore()
+_capture_store: ContentCaptureStore = InMemoryContentCaptureStore()
 _pending_plan: PendingPlan | None = None
 _active_autonomy_session_id: str | None = None
 _autonomy_sessions: Dict[str, AutonomySession] = {}
 _autonomy_session_order: List[str] = []
+_phase16_last_response_by_session: Dict[str, Dict[str, Any]] = {}
+_phase16_last_response_global: Dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -354,6 +364,217 @@ def _is_conversational(normalized: str) -> bool:
     return any(lowered.startswith(prefix + " ") for prefix in _CONVERSATIONAL_PREFIXES)
 
 
+def _normalize_capture_label(raw: str) -> str:
+    text = _normalize(raw).strip(" .,:;\"'()[]{}")
+    text = re.sub(r"\s+", "-", text)
+    return text
+
+
+def _parse_capture_request(normalized: str) -> Dict[str, Any] | None:
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    if not (lowered.startswith("capture") or lowered.startswith("store") or lowered.startswith("remember")):
+        return None
+
+    simple = re.fullmatch(
+        r"capture (?:this|this content|last response|the last response)(?: (?:as|with label) (.+))?",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if simple is not None:
+        raw_label = simple.group(1) or ""
+        return {
+            "valid": True,
+            "target": "last_response",
+            "label": _normalize_capture_label(raw_label),
+            "reason": "",
+        }
+
+    store = re.fullmatch(
+        r"store this content with label (.+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if store is not None:
+        return {
+            "valid": True,
+            "target": "last_response",
+            "label": _normalize_capture_label(store.group(1)),
+            "reason": "",
+        }
+
+    remember = re.fullmatch(
+        r"remember (?:the )?last response as (.+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if remember is not None:
+        return {
+            "valid": True,
+            "target": "last_response",
+            "label": _normalize_capture_label(remember.group(1)),
+            "reason": "",
+        }
+
+    return {
+        "valid": False,
+        "target": "",
+        "label": "",
+        "reason": "Ambiguous capture request. Use explicit syntax like 'capture this' or 'remember the last response as <label>'.",
+    }
+
+
+def _is_capture_request(normalized: str) -> bool:
+    return _parse_capture_request(normalized) is not None
+
+
+def _phase16_last_response_candidate() -> Dict[str, Any] | None:
+    session_key = (current_session_id() or "").strip()
+    if session_key and session_key in _phase16_last_response_by_session:
+        return copy.deepcopy(_phase16_last_response_by_session[session_key])
+    if _phase16_last_response_global is None:
+        return None
+    return copy.deepcopy(_phase16_last_response_global)
+
+
+def _phase16_capture_response(
+    *,
+    envelope: Envelope,
+    normalized_utterance: str,
+) -> Dict[str, Any]:
+    request = _parse_capture_request(normalized_utterance)
+    if request is None or not request.get("valid"):
+        return {
+            "type": "capture_rejected",
+            "executed": False,
+            "envelope": envelope,
+            "message": str((request or {}).get("reason") or "Invalid capture request."),
+        }
+
+    target = _phase16_last_response_candidate()
+    if target is None:
+        return {
+            "type": "capture_rejected",
+            "executed": False,
+            "envelope": envelope,
+            "message": "Capture rejected: no prior assistant response is available in this session.",
+        }
+
+    captured_text = str(target.get("text", "")).strip()
+    if not captured_text:
+        return {
+            "type": "capture_rejected",
+            "executed": False,
+            "envelope": envelope,
+            "message": "Capture rejected: target content is empty.",
+        }
+
+    label = str(request.get("label", "")).strip()
+    session_id = str(target.get("session_id", "")).strip()
+    origin_turn_id = str(target.get("origin_turn_id", "")).strip()
+    source = str(target.get("source", "assistant_response")).strip() or "assistant_response"
+
+    captured = CapturedContent(
+        content_id=f"cc-{uuid.uuid4()}",
+        type="text",
+        source=source,
+        text=captured_text,
+        timestamp=_utcnow().isoformat(),
+        origin_turn_id=origin_turn_id,
+        label=label,
+        session_id=session_id,
+    )
+    _capture_store.append(captured)
+    _emit_observability_event(
+        phase="phase16",
+        event_type="content_captured",
+        metadata={
+            "content_id": captured.content_id,
+            "label": captured.label,
+            "origin_turn_id": captured.origin_turn_id,
+            "source": captured.source,
+        },
+    )
+    label_part = f" with label '{captured.label}'" if captured.label else ""
+    return {
+        "type": "content_captured",
+        "executed": False,
+        "envelope": envelope,
+        "captured_content": captured.to_dict(),
+        "message": f"Captured content {captured.content_id}{label_part}.",
+    }
+
+
+def _resolve_captured_reference(utterance: str) -> tuple[CapturedContent | None, str | None]:
+    normalized = _normalize(utterance)
+    if not normalized:
+        return None, None
+
+    ids = sorted(set(re.findall(r"\bcc-[a-f0-9-]{8,}\b", normalized.lower())))
+    if ids:
+        if len(ids) > 1:
+            return None, "Capture reference rejected: multiple content IDs were provided."
+        item = _capture_store.get_by_id(ids[0])
+        if item is None:
+            return None, f"Capture reference rejected: content ID '{ids[0]}' was not found."
+        return item, None
+
+    label_match = re.search(r"\bthat ([a-z0-9_-]+)\b", normalized, flags=re.IGNORECASE)
+    if label_match is None:
+        return None, None
+    label = _normalize_capture_label(label_match.group(1))
+    if not label:
+        return None, None
+    items = _capture_store.get_by_label(label)
+    if len(items) > 1:
+        return None, f"Capture reference rejected: label '{label}' is ambiguous."
+    if len(items) == 1:
+        return items[0], None
+    return None, None
+
+
+def _phase16_apply_to_envelope(
+    *,
+    envelope: Envelope,
+    normalized_utterance: str,
+) -> tuple[Dict[str, Any] | None, Envelope]:
+    if str(envelope.get("intent", "")) == "capture_content":
+        return _phase16_capture_response(envelope=envelope, normalized_utterance=normalized_utterance), envelope
+
+    if str(envelope.get("lane", "")).upper() != "PLAN":
+        return None, envelope
+
+    referenced, error = _resolve_captured_reference(str(envelope.get("utterance", normalized_utterance)))
+    if error:
+        return {
+            "type": "capture_reference_rejected",
+            "executed": False,
+            "envelope": envelope,
+            "message": error,
+        }, envelope
+    if referenced is None:
+        return None, envelope
+
+    updated = copy.deepcopy(envelope)
+    entities = updated.get("entities", [])
+    if not isinstance(entities, list):
+        entities = []
+    entities.append(
+        {
+            "name": "captured_content",
+            "content_id": referenced.content_id,
+            "label": referenced.label,
+            "type": referenced.type,
+            "source": referenced.source,
+            "text": referenced.text,
+            "origin_turn_id": referenced.origin_turn_id,
+        }
+    )
+    updated["entities"] = entities
+    return None, updated
+
+
 def _interpret_phase1(utterance: str) -> Envelope:
     """Frozen Phase 1 deterministic interpreter behavior."""
     normalized = _normalize(utterance)
@@ -434,6 +655,25 @@ def _interpret_phase1(utterance: str) -> Envelope:
             allowed=True,
             reason="Ambiguous input requires clarification before any route selection.",
             next_prompt="Can you clarify what outcome you want?",
+        )
+
+    capture_request = _parse_capture_request(normalized)
+    if capture_request is not None:
+        valid = bool(capture_request.get("valid"))
+        return _envelope(
+            utterance=normalized,
+            lane="HELP",
+            intent="capture_content",
+            confidence=0.94 if valid else 0.50,
+            requires_approval=False,
+            risk_level="low",
+            allowed=True,
+            reason=(
+                "Explicit content-capture request routed through governed interpreter."
+                if valid
+                else str(capture_request.get("reason") or "Capture request requires clarification.")
+            ),
+            next_prompt="",
         )
 
     # General deterministic fallback rules.
@@ -996,6 +1236,44 @@ def configure_memory_store(mode: str, *, path: str | None = None) -> None:
 def set_memory_store(store: MemoryStore) -> None:
     global _memory_store
     _memory_store = store
+
+
+def configure_capture_store(mode: str, *, path: str | None = None) -> None:
+    """Configure captured-content store backend.
+
+    Supported modes:
+    - in_memory
+    - file (requires path)
+    """
+    global _capture_store
+    normalized = _normalize(mode).lower()
+    if normalized == "in_memory":
+        _capture_store = InMemoryContentCaptureStore()
+        return
+    if normalized == "file":
+        if not path or not str(path).strip():
+            raise ValueError("File-backed capture mode requires a non-empty path.")
+        _capture_store = FileBackedContentCaptureStore(path)
+        return
+    raise ValueError(f"Unsupported capture store mode: {mode}")
+
+
+def set_capture_store(store: ContentCaptureStore) -> None:
+    global _capture_store
+    _capture_store = store
+
+
+def get_captured_content_last(count: int) -> List[Dict[str, Any]]:
+    return [item.to_dict() for item in _capture_store.get_last(count)]
+
+
+def get_captured_content_by_id(content_id: str) -> Dict[str, Any] | None:
+    item = _capture_store.get_by_id(content_id)
+    return item.to_dict() if item is not None else None
+
+
+def get_captured_content_by_label(label: str) -> List[Dict[str, Any]]:
+    return [item.to_dict() for item in _capture_store.get_by_label(label)]
 
 
 def get_memory_events_last(count: int) -> List[Dict[str, Any]]:
@@ -1607,11 +1885,19 @@ def reset_phase15_state() -> None:
     _autonomy_session_order = []
 
 
+def reset_phase16_state() -> None:
+    global _phase16_last_response_by_session, _phase16_last_response_global
+    _phase16_last_response_by_session = {}
+    _phase16_last_response_global = None
+    _capture_store.clear()
+
+
 def reset_phase5_state() -> None:
     global _pending_action, _execution_events
     _pending_action = None
     reset_phase8_state()
     reset_phase15_state()
+    reset_phase16_state()
     _execution_events = []
     reset_phase7_memory()
     reset_observability_state()
@@ -2094,6 +2380,12 @@ def _process_user_message_phase15(utterance: str) -> Dict[str, Any] | None:
         event_type="policy_evaluated",
         metadata=_envelope_pointer(envelope),
     )
+    phase16_result, envelope = _phase16_apply_to_envelope(
+        envelope=envelope,
+        normalized_utterance=routed_utterance,
+    )
+    if phase16_result is not None:
+        return phase16_result
 
     if not _is_actionable_envelope(envelope):
         return {
@@ -2308,6 +2600,12 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
             event_type="policy_evaluated",
             metadata=_envelope_pointer(envelope),
         )
+        phase16_result, envelope = _phase16_apply_to_envelope(
+            envelope=envelope,
+            normalized_utterance=routed_utterance,
+        )
+        if phase16_result is not None:
+            return phase16_result
         if not _is_actionable_envelope(envelope):
             return {
                 "type": "no_action",
@@ -2519,6 +2817,12 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                     event_type="policy_evaluated",
                     metadata=_envelope_pointer(envelope),
                 )
+                phase16_result, envelope = _phase16_apply_to_envelope(
+                    envelope=envelope,
+                    normalized_utterance=routed_utterance,
+                )
+                if phase16_result is not None:
+                    return phase16_result
                 if not _is_actionable_envelope(envelope):
                     return {
                         "type": "no_action",
@@ -2678,6 +2982,37 @@ def _phase10_response_text(
     return str(governed_result.get("message", ""))
 
 
+def _phase16_response_source(governed_result: Dict[str, Any]) -> str:
+    result_type = str(governed_result.get("type", ""))
+    envelope = governed_result.get("envelope", {})
+    envelope = envelope if isinstance(envelope, dict) else {}
+    lane = str(envelope.get("lane", ""))
+    if result_type in {"no_action", "phase5_disabled"} and lane in {"CHAT", "HELP"}:
+        return "llm"
+    if result_type in {"executed", "step_executed", "plan_executed", "autonomy_executed"}:
+        return "tool_result"
+    return "assistant_response"
+
+
+def _phase16_record_last_response(
+    *,
+    session_id: str,
+    correlation_id: str,
+    response_text: str,
+    governed_result: Dict[str, Any],
+) -> None:
+    global _phase16_last_response_global
+    record = {
+        "session_id": session_id,
+        "origin_turn_id": correlation_id,
+        "text": str(response_text),
+        "source": _phase16_response_source(governed_result),
+        "timestamp": _utcnow().isoformat(),
+    }
+    _phase16_last_response_by_session[session_id] = copy.deepcopy(record)
+    _phase16_last_response_global = copy.deepcopy(record)
+
+
 def process_conversational_turn(
     utterance: str,
     *,
@@ -2700,6 +3035,12 @@ def process_conversational_turn(
             utterance=utterance,
             governed_result=governed_result,
             llm_responder=llm_responder,
+        )
+        _phase16_record_last_response(
+            session_id=resolved_session_id,
+            correlation_id=resolved_correlation_id,
+            response_text=response_text,
+            governed_result=governed_result,
         )
         _emit_observability_event(
             phase="phase10",
