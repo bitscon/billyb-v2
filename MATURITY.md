@@ -1,8 +1,8 @@
 # Billy Maturity Snapshot
 
 ## Release
-- Tag: `billy-maturity-6-explicit-execution`
-- Status: `Level 6 - Explicitly Authorized Execution` achieved
+- Tag: `billy-maturity-9-planning`
+- Status: `Level 9 - Approval-Gated Planning & Execution` achieved
 
 ## Phase Summary (1-6)
 1. `Phase 1 - Deterministic Interpreter`
@@ -24,3 +24,25 @@
 - No action chaining
 - No background execution
 - No policy decisions delegated to LLMs
+
+## Maturity Level 9 — Approval-Gated Planning & Execution (Frozen)
+
+### Capabilities
+- Deterministic intent interpretation (Phase 1)
+- Semantic lane routing with fallback (Phase 2)
+- Structured intent & entity extraction (Phase 3)
+- Deterministic policy evaluation (Phase 4)
+- Explicit conversational approval gating (Phase 5)
+- Contract-bound execution backends (Phase 6)
+- Append-only execution memory & recall (Phase 7)
+- Multi-step plan construction with approval-gated execution (Phase 8)
+
+### Guarantees
+- No execution without explicit approval
+- No autonomous behavior
+- No dynamic replanning
+- No memory-driven behavior changes
+- All actions are auditable and replayable
+
+### Status
+Frozen. All phases below Level 9 are treated as infrastructure and must not be modified without explicit promotion.
