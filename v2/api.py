@@ -162,6 +162,11 @@ class ChatCompletionRequest(BaseModel):
     messages: List[ChatMessage]
 
 
+class CompletionRequest(BaseModel):
+    model: Optional[str] = "billy-v2"
+    prompt: str
+
+
 @app.get("/v1/models")
 def v1_models():
     return {
@@ -205,4 +210,40 @@ def v1_chat_completions(req: ChatCompletionRequest):
             "completion_tokens": 0,
             "total_tokens": 0,
         },
+    }
+
+
+@app.post("/v1/completions")
+def v1_completions(req: CompletionRequest):
+    result = runtime.run_turn(
+        user_input=req.prompt,
+        session_context={},
+    )
+
+    text: str = ""
+    if isinstance(result, dict):
+        final_output = result.get("final_output")
+        if isinstance(final_output, dict):
+            message = final_output.get("message")
+            if isinstance(message, str):
+                text = message
+            else:
+                text = str(final_output)
+        elif final_output is None:
+            text = ""
+        else:
+            text = str(final_output)
+    else:
+        text = str(result)
+
+    return {
+        "id": "billy-v1",
+        "object": "text_completion",
+        "choices": [
+            {
+                "index": 0,
+                "text": text,
+                "finish_reason": "stop",
+            }
+        ],
     }

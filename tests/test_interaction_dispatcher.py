@@ -25,7 +25,7 @@ def test_run_turn_rejects_legacy_interactions(user_input: str, token: str):
     assert token in result["final_output"]
 
 
-def test_non_legacy_input_routes_to_deterministic_loop(monkeypatch):
+def test_explicit_inspection_input_routes_to_deterministic_loop(monkeypatch):
     runtime = runtime_mod.BillyRuntime(config={})
     observed = {}
 
@@ -47,3 +47,135 @@ def test_non_legacy_input_routes_to_deterministic_loop(monkeypatch):
     assert result["final_output"] == "loop-output"
     assert observed["user_input"] == "locate n8n on the barn"
     assert observed["trace_id"] == "trace-loop"
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "create a file",
+        "service_foo_bar_12345",
+    ],
+)
+def test_invalid_ambiguous_input_rejects_without_inspection(monkeypatch, user_input: str):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    def _fail_loop(_user_input: str, _trace_id: str):
+        raise AssertionError("Invalid/ambiguous input should not route to deterministic loop.")
+
+    def _fail_inspect(_query: str):
+        raise AssertionError("Invalid/ambiguous input should not trigger inspection.")
+
+    monkeypatch.setattr(runtime_mod, "_run_deterministic_loop", _fail_loop)
+    monkeypatch.setattr(runtime_mod, "_inspect_barn", _fail_inspect)
+
+    result = runtime.run_turn(user_input, {"trace_id": "trace-invalid"})
+
+    assert result["status"] == "error"
+    assert "invalid/ambiguous" in result["final_output"].lower()
+
+
+def test_identity_location_question_routes_to_read_only_without_filesystem_access(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    def _fail_llm(_prompt: str) -> str:
+        raise AssertionError("Identity-location route must be deterministic and not call LLM.")
+
+    def _fail_loop(_user_input: str, _trace_id: str):
+        raise AssertionError("Identity-location route must not trigger deterministic loop.")
+
+    def _fail_inspect(_query: str):
+        raise AssertionError("Identity-location route must not trigger inspection.")
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fail_llm)
+    monkeypatch.setattr(runtime_mod, "_run_deterministic_loop", _fail_loop)
+    monkeypatch.setattr(runtime_mod, "_inspect_barn", _fail_inspect)
+
+    result = runtime.run_turn("where are you?", {"trace_id": "trace-identity-location"})
+
+    assert result["status"] == "success"
+    assert result["mode"] == "read_only_conversation"
+    assert "runtime host" in result["final_output"].lower()
+    assert "path" in result["final_output"].lower()
+    assert "port" in result["final_output"].lower()
+    assert result["tool_calls"] == []
+
+
+def test_read_only_informational_question_routes_to_llm(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+    observed = {}
+
+    def _fake_llm(prompt: str) -> str:
+        observed["prompt"] = prompt
+        return "informational-response"
+
+    def _fail_loop(_user_input: str, _trace_id: str):
+        raise AssertionError("Read-only informational prompt should not route to deterministic loop.")
+
+    def _fail_inspect(_query: str):
+        raise AssertionError("Read-only informational prompt should not trigger inspection.")
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fake_llm)
+    monkeypatch.setattr(runtime_mod, "_run_deterministic_loop", _fail_loop)
+    monkeypatch.setattr(runtime_mod, "_inspect_barn", _fail_inspect)
+
+    result = runtime.run_turn("tell me a fun fact about octopuses", {"trace_id": "trace-read-only"})
+
+    assert result["status"] == "success"
+    assert result["final_output"] == "informational-response"
+    assert result["tool_calls"] == []
+    assert result["mode"] == "read_only_conversation"
+    assert observed["prompt"] == "tell me a fun fact about octopuses"
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "what do bees eat?",
+        "what services are running on this server?",
+    ],
+)
+def test_read_only_informational_blocklist_rejects_unsafe_or_ambiguous_prompts(monkeypatch, user_input: str):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    def _fail_llm(_prompt: str) -> str:
+        raise AssertionError("Blocked prompts must not route to LLM conversation path.")
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fail_llm)
+
+    result = runtime.run_turn(user_input, {"trace_id": "trace-read-only-reject"})
+
+    assert result["status"] == "error"
+    assert "invalid/ambiguous" in result["final_output"].lower()
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "assume governance",
+        "use operating model",
+        "read onboarding",
+    ],
+)
+def test_governance_handoff_returns_deterministic_instruction_without_filesystem_access(monkeypatch, user_input: str):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    def _fail_llm(_prompt: str) -> str:
+        raise AssertionError("Governance handoff must not call LLM.")
+
+    def _fail_loop(_user_input: str, _trace_id: str):
+        raise AssertionError("Governance handoff must not trigger deterministic loop.")
+
+    def _fail_inspect(_query: str):
+        raise AssertionError("Governance handoff must not trigger inspection.")
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fail_llm)
+    monkeypatch.setattr(runtime_mod, "_run_deterministic_loop", _fail_loop)
+    monkeypatch.setattr(runtime_mod, "_inspect_barn", _fail_inspect)
+
+    result = runtime.run_turn(user_input, {"trace_id": "trace-governance-handoff"})
+
+    assert result["status"] == "success"
+    assert "governance cannot be assumed implicitly" in result["final_output"].lower()
+    assert "use: /governance load <path>" in result["final_output"].lower()
+    assert "invalid/ambiguous" not in result["final_output"].lower()
+    assert result["tool_calls"] == []

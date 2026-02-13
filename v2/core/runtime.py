@@ -539,6 +539,35 @@ def _has_explicit_governed_trigger(text: str) -> bool:
     )
 
 
+def _is_explicit_inspection_request(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    if not normalized:
+        return False
+    if normalized.startswith("where are "):
+        return False
+    if normalized.startswith("where am "):
+        return False
+    if normalized.startswith("locate/inspect:"):
+        return True
+    if normalized.startswith(("locate ", "find ", "check ", "list ", "show ")):
+        return True
+    return normalized.startswith("where is ") or normalized.startswith("where's ")
+
+
+def _is_deterministic_loop_trigger(text: str) -> bool:
+    normalized = text.strip()
+    lowered = normalized.lower()
+    if lowered in {"ignored", "continue"}:
+        return True
+    if lowered.startswith("claim:"):
+        return True
+    if _is_explicit_inspection_request(normalized):
+        return True
+    if _is_action_request(normalized):
+        return True
+    return False
+
+
 def _legacy_interaction_reason(text: str) -> str | None:
     normalized = text.strip()
     lowered = normalized.lower()
@@ -594,6 +623,13 @@ def _dispatch_interaction(runtime: "BillyRuntime", text: str) -> Dict[str, Any]:
             "response": identity_response,
         }
 
+    if _is_governance_handoff_instruction(normalized):
+        return {
+            "category": "governance/instruction",
+            "route": "governance_instruction",
+            "message": _GOVERNANCE_HANDOFF_RESPONSE,
+        }
+
     preinspection_route = _classify_preinspection_route(normalized)
     if preinspection_route is not None:
         return {
@@ -602,9 +638,19 @@ def _dispatch_interaction(runtime: "BillyRuntime", text: str) -> Dict[str, Any]:
             "payload": preinspection_route,
         }
 
+    if _is_deterministic_loop_trigger(normalized):
+        return {
+            "category": "internal/deterministic",
+            "route": "deterministic_loop",
+        }
+
     return {
         "category": "invalid/ambiguous",
-        "route": "deterministic_loop",
+        "route": "reject",
+        "message": (
+            "Interaction rejected: invalid/ambiguous input. "
+            "Use an explicit governed trigger."
+        ),
     }
 
 
@@ -2230,6 +2276,122 @@ _EXPLICIT_CONVERSATIONAL_PHRASES = {
     "what is your name",
 }
 
+_READ_ONLY_INFO_PREFIXES = (
+    "what is ",
+    "what are ",
+    "what's ",
+    "who is ",
+    "who are ",
+    "who's ",
+    "why ",
+    "how does ",
+    "how do ",
+    "tell me ",
+    "explain ",
+)
+
+_READ_ONLY_INFO_PHRASES = (
+    "fun fact",
+)
+
+_IDENTITY_LOCATION_PREFIXES = (
+    "where are you",
+    "where do you exist",
+    "where are you running",
+    "where do you run",
+)
+
+_READ_ONLY_BLOCKED_WORDS = {
+    "do",
+    "run",
+    "change",
+}
+
+_READ_ONLY_SYSTEM_TERMS = {
+    "apply",
+    "approve",
+    "container",
+    "containers",
+    "daemon",
+    "daemons",
+    "delete",
+    "deploy",
+    "directory",
+    "directories",
+    "disable",
+    "docker",
+    "enable",
+    "exec",
+    "file",
+    "files",
+    "folder",
+    "folders",
+    "grant",
+    "host",
+    "hostname",
+    "hosts",
+    "inspect",
+    "inspection",
+    "install",
+    "installed",
+    "log",
+    "logs",
+    "machine",
+    "machines",
+    "memory",
+    "ops",
+    "path",
+    "paths",
+    "port",
+    "ports",
+    "process",
+    "processes",
+    "push",
+    "recall",
+    "register",
+    "reload",
+    "remember",
+    "remove",
+    "repo",
+    "repository",
+    "repositories",
+    "restart",
+    "running",
+    "server",
+    "servers",
+    "service",
+    "services",
+    "start",
+    "status",
+    "stop",
+    "system",
+    "systems",
+    "systemctl",
+    "tool",
+    "tools",
+    "update",
+    "upgrade",
+    "workflow",
+    "workflows",
+}
+
+_GOVERNANCE_HANDOFF_PHRASES = (
+    "assume governance",
+    "use operating model",
+    "read onboarding",
+)
+
+_IDENTITY_LOCATION_CONCEPTUAL_RESPONSE = (
+    "I operate conceptually within the governed Billy environment for workshop.home. "
+    "I do not provide runtime host, path, port, or system-location details."
+)
+
+_GOVERNANCE_HANDOFF_RESPONSE = (
+    "Governance cannot be assumed implicitly.\n"
+    "Governance changes require an explicit command.\n"
+    "Use: /governance load <path>"
+)
+
 
 def _is_explicit_conversational(text: str) -> bool:
     normalized = re.sub(r"[^a-z0-9\s]", " ", text.lower())
@@ -2239,6 +2401,57 @@ def _is_explicit_conversational(text: str) -> bool:
     if normalized in _EXPLICIT_CONVERSATIONAL_PHRASES:
         return True
     if normalized.startswith("hello ") or normalized.startswith("hi ") or normalized.startswith("hey "):
+        return True
+    return False
+
+
+def _is_identity_location_question(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized or not normalized.startswith("where "):
+        return False
+    for prefix in _IDENTITY_LOCATION_PREFIXES:
+        if normalized == prefix or normalized.startswith(prefix + " "):
+            return True
+    return False
+
+
+def _is_governance_handoff_instruction(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    if not normalized or normalized.startswith("/"):
+        return False
+    return any(phrase in normalized for phrase in _GOVERNANCE_HANDOFF_PHRASES)
+
+
+def _is_read_only_informational_request(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    if not normalized or normalized.startswith("/"):
+        return False
+
+    if _has_explicit_governed_trigger(normalized):
+        return False
+    if normalized.startswith("remember:"):
+        return False
+    if normalized == "recall" or normalized.startswith("recall "):
+        return False
+    if _is_explicit_inspection_request(normalized):
+        return False
+    if _is_action_request(normalized):
+        return False
+
+    tokens = re.sub(r"[^a-z0-9\s]", " ", normalized).split()
+    if not tokens:
+        return False
+
+    token_set = set(tokens)
+    if token_set.intersection(_READ_ONLY_BLOCKED_WORDS):
+        return False
+    if token_set.intersection(_READ_ONLY_SYSTEM_TERMS):
+        return False
+
+    if any(normalized.startswith(prefix) for prefix in _READ_ONLY_INFO_PREFIXES):
+        return True
+    if any(phrase in normalized for phrase in _READ_ONLY_INFO_PHRASES):
         return True
     return False
 
@@ -2262,6 +2475,10 @@ def _classify_preinspection_route(text: str) -> tuple[str, str] | None:
         return None
     if _is_explicit_conversational(normalized):
         return "conversation", normalized
+    if _is_identity_location_question(normalized):
+        return "read_only_conversation_identity_location", normalized
+    if _is_read_only_informational_request(normalized):
+        return "read_only_conversation", normalized
     return None
 
 
@@ -2631,26 +2848,28 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
     if selection.status == "blocked" and "no tasks" in (selection.reason or "").lower():
         if user_input.strip() and not _is_mode_command(user_input):
             task_type = _classify_dto_type(user_input)
-            description, _scope = _dto_description(task_type, user_input)
-            created_id = create_task(description)
-            update_status(created_id, "ready")
-            save_graph(trace_id)
-            task_origination_block = "\n".join([
-                "TASK ORIGINATION:",
-                f"- created: {created_id}",
-                f"- type: {task_type}",
-                f"- description: {description}",
-            ])
-            selection = select_next_task(
-                list(graph.tasks.values()),
-                SelectionContext(
-                    user_input=user_input,
-                    trace_id=trace_id,
-                    via_ops=user_input.strip().startswith("/ops ")
-                    or user_input.strip().lower().startswith("plan")
-                    or user_input.strip().upper().startswith("APPROVE PLAN "),
-                ),
-            )
+            allow_origination = task_type != "inspection" or _is_explicit_inspection_request(user_input)
+            if allow_origination:
+                description, _scope = _dto_description(task_type, user_input)
+                created_id = create_task(description)
+                update_status(created_id, "ready")
+                save_graph(trace_id)
+                task_origination_block = "\n".join([
+                    "TASK ORIGINATION:",
+                    f"- created: {created_id}",
+                    f"- type: {task_type}",
+                    f"- description: {description}",
+                ])
+                selection = select_next_task(
+                    list(graph.tasks.values()),
+                    SelectionContext(
+                        user_input=user_input,
+                        trace_id=trace_id,
+                        via_ops=user_input.strip().startswith("/ops ")
+                        or user_input.strip().lower().startswith("plan")
+                        or user_input.strip().upper().startswith("APPROVE PLAN "),
+                    ),
+                )
     decision = create_node(
         "DECISION",
         f"task selection: {selection.status}",
@@ -3959,6 +4178,14 @@ class BillyRuntime:
                 "status": "success",
                 "trace_id": trace_id,
             }
+
+        if interaction_route == "governance_instruction":
+            return {
+                "final_output": interaction_dispatch.get("message", _GOVERNANCE_HANDOFF_RESPONSE),
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+            }
         if _is_approval_command(normalized_input):
             draft_id = _extract_approval_request(normalized_input)
             if draft_id is None:
@@ -4181,13 +4408,29 @@ class BillyRuntime:
                         "status": "success",
                         "trace_id": trace_id,
                     }
-            elif route_type == "conversation":
-                return {
+            elif route_type in (
+                "conversation",
+                "read_only_conversation",
+                "read_only_conversation_identity_location",
+            ):
+                if route_type == "read_only_conversation_identity_location":
+                    return {
+                        "final_output": _IDENTITY_LOCATION_CONCEPTUAL_RESPONSE,
+                        "tool_calls": [],
+                        "status": "success",
+                        "trace_id": trace_id,
+                        "mode": "read_only_conversation",
+                    }
+
+                response = {
                     "final_output": self._llm_answer(route_payload),
                     "tool_calls": [],
                     "status": "success",
                     "trace_id": trace_id,
                 }
+                if route_type == "read_only_conversation":
+                    response["mode"] = "read_only_conversation"
+                return response
             elif route_type == "tool":
                 tool_id = route_payload
                 assert_no_tool_execution_without_registry(tool_id, _tool_registry)
@@ -4290,14 +4533,13 @@ class BillyRuntime:
             }
 
         if _requires_barn_inspection(normalized_input):
-            inspection = _inspect_barn(normalized_input)
-            if _is_action_request(normalized_input):
-                next_step = "\n\nNEXT STEP:\n- If you want me to act, reply with: /ops " + normalized_input
-                inspection = inspection + next_step
             return {
-                "final_output": inspection,
+                "final_output": (
+                    "Interaction rejected: invalid/ambiguous input. "
+                    "Use an explicit governed trigger."
+                ),
                 "tool_calls": [],
-                "status": "success",
+                "status": "error",
                 "trace_id": trace_id,
             }
 

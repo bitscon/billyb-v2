@@ -7,6 +7,10 @@ import v2.core.capability_contracts as ccr
 import v2.core.plans_hamp as plans
 
 
+def _run_plan(trace_id: str):
+    return runtime_mod._run_deterministic_loop("plan", trace_id)
+
+
 def _setup_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(tg, "TASK_GRAPH_DIR", tmp_path / "task_graph")
     tg.TASK_GRAPH_DIR.mkdir(parents=True, exist_ok=True)
@@ -45,7 +49,7 @@ def test_plan_cannot_be_created_for_blocked_task(tmp_path, monkeypatch):
     task_id = tg.create_task("claim:blocked")
     tg.block_task(task_id, "blocked for test")
     tg.save_graph("trace-1")
-    response = runtime_mod.run_turn("plan", {"trace_id": "trace-1"})
+    response = _run_plan("trace-1")
     assert "PLAN PROPOSAL" not in response["final_output"]
     assert plans.list_plans() == []
 
@@ -56,7 +60,7 @@ def test_plan_cannot_be_created_if_failure_mode_exists(tmp_path, monkeypatch):
     task_id = tg.create_task("claim:nginx running")
     tg.update_status(task_id, "ready")
     tg.save_graph("trace-1")
-    response = runtime_mod.run_turn("plan", {"trace_id": "trace-1"})
+    response = _run_plan("trace-1")
     assert "REFUSAL" in response["final_output"]
     assert plans.list_plans() == []
 
@@ -68,7 +72,7 @@ def test_plan_cannot_be_auto_approved(tmp_path, monkeypatch):
     task_id = tg.create_task("/exec touch /tmp/m24.txt")
     tg.update_status(task_id, "ready")
     tg.save_graph("trace-1")
-    response = runtime_mod.run_turn("plan", {"trace_id": "trace-1"})
+    response = _run_plan("trace-1")
     output = response["final_output"]
     assert "PLAN PROPOSAL" in output
     plan_id = output.split("plan_id:", 1)[1].splitlines()[0].strip()
@@ -83,10 +87,10 @@ def test_approved_plan_is_immutable(tmp_path, monkeypatch):
     task_id = tg.create_task("/exec touch /tmp/m24.txt")
     tg.update_status(task_id, "ready")
     tg.save_graph("trace-1")
-    proposal = runtime_mod.run_turn("plan", {"trace_id": "trace-1"})
+    proposal = _run_plan("trace-1")
     plan_id = proposal["final_output"].split("plan_id:", 1)[1].splitlines()[0].strip()
     runtime_mod.run_turn(f"APPROVE PLAN {plan_id}", {"trace_id": "trace-1"})
-    response = runtime_mod.run_turn("plan", {"trace_id": "trace-1"})
+    response = _run_plan("trace-1")
     assert "PLAN PROPOSAL" not in response["final_output"]
 
 
@@ -146,7 +150,7 @@ def test_ops_required_per_step(tmp_path, monkeypatch):
     task_id = tg.create_task("/ops restart nginx")
     tg.update_status(task_id, "ready")
     tg.save_graph("trace-1")
-    proposal = runtime_mod.run_turn("plan", {"trace_id": "trace-1"})
+    proposal = _run_plan("trace-1")
     plan_id = proposal["final_output"].split("plan_id:", 1)[1].splitlines()[0].strip()
     response = runtime_mod.run_turn(f"APPROVE PLAN {plan_id}", {"trace_id": "trace-1"})
     assert response["status"] == "error"
@@ -160,8 +164,8 @@ def test_new_plan_id_required_after_change(tmp_path, monkeypatch):
     task_id = tg.create_task("/exec touch /tmp/m24.txt")
     tg.update_status(task_id, "ready")
     tg.save_graph("trace-1")
-    proposal = runtime_mod.run_turn("plan", {"trace_id": "trace-1"})
+    proposal = _run_plan("trace-1")
     plan_id = proposal["final_output"].split("plan_id:", 1)[1].splitlines()[0].strip()
     plans.approve_plan(plan_id)
-    response = runtime_mod.run_turn("plan", {"trace_id": "trace-1"})
+    response = _run_plan("trace-1")
     assert "PLAN PROPOSAL" not in response["final_output"]
