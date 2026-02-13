@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Protocol
+from typing import Any, Callable, Dict, List, Protocol
 import uuid
 
 import jsonschema
@@ -1530,4 +1530,83 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
         "action_id": action_id,
         "execution_event": event,
         "message": "Execution accepted and completed once.",
+    }
+
+
+def _phase10_default_freeform_response(utterance: str, _envelope: Envelope) -> str:
+    normalized = _normalize(utterance)
+    model_config = _load_model_config()
+    if llm_api is not None and model_config:
+        messages = [
+            {
+                "role": "system",
+                "content": "Respond conversationally to the user. Do not emit tool calls or policy decisions.",
+            },
+            {"role": "user", "content": normalized},
+        ]
+        try:
+            answer = llm_api.get_completion(messages, model_config)
+            if isinstance(answer, str) and answer.strip():
+                return answer.strip()
+        except Exception:
+            pass
+    if normalized.lower().startswith("tell me a joke"):
+        return "Why do programmers confuse Halloween and Christmas? Because OCT 31 == DEC 25."
+    return "I can help with that."
+
+
+def _phase10_response_text(
+    utterance: str,
+    governed_result: Dict[str, Any],
+    llm_responder: Callable[[str, Envelope], str] | None = None,
+) -> str:
+    result_type = str(governed_result.get("type", ""))
+    envelope = governed_result.get("envelope", {})
+    envelope = envelope if isinstance(envelope, dict) else {}
+    lane = str(envelope.get("lane", ""))
+
+    if result_type in {"approval_required", "plan_approval_required", "mode_info"}:
+        return str(governed_result.get("message", ""))
+
+    if result_type in {"executed", "step_executed", "plan_executed"}:
+        return str(governed_result.get("message", ""))
+
+    if result_type in {"approval_rejected", "approval_expired", "execution_rejected", "plan_rejected"}:
+        return str(governed_result.get("message", ""))
+
+    if result_type in {"no_action", "phase5_disabled"}:
+        if lane in {"CHAT", "HELP"}:
+            responder = llm_responder or _phase10_default_freeform_response
+            text = responder(utterance, envelope)
+            return str(text) if text is not None else ""
+        if lane == "CLARIFY":
+            next_prompt = envelope.get("next_prompt", "")
+            if isinstance(next_prompt, str) and next_prompt.strip():
+                return next_prompt
+            return "Can you clarify what outcome you want?"
+        return str(governed_result.get("message", ""))
+
+    return str(governed_result.get("message", ""))
+
+
+def process_conversational_turn(
+    utterance: str,
+    *,
+    llm_responder: Callable[[str, Envelope], str] | None = None,
+) -> Dict[str, Any]:
+    """Phase 10 conversational entrypoint.
+
+    Every turn is governed by process_user_message(...). Freeform text generation
+    is a subroutine that cannot capture conversational control state.
+    """
+    governed_result = process_user_message(utterance)
+    response_text = _phase10_response_text(
+        utterance=utterance,
+        governed_result=governed_result,
+        llm_responder=llm_responder,
+    )
+    return {
+        "response": response_text,
+        "next_state": "ready_for_input",
+        "governed_result": governed_result,
     }
