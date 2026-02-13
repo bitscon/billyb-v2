@@ -1,0 +1,59 @@
+contracts:
+  - tool_name: "stub.filesystem.create_empty_file"
+    intent: "plan.create_empty_file"
+    description: "Create an empty file at a resolved path (stubbed; no side effects)."
+    input_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - path
+      properties:
+        path:
+          type: string
+          minLength: 1
+    output_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - created
+        - path
+      properties:
+        status:
+          type: string
+          const: "stubbed"
+        created:
+          type: boolean
+        path:
+          type: string
+    risk_level: "medium"
+    side_effects: true
+
+  - tool_name: "stub.actions.generic_plan_request"
+    intent: "plan.user_action_request"
+    description: "Execute a generic planning action in stub mode with no real side effects."
+    input_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - utterance
+        - entities
+      properties:
+        utterance:
+          type: string
+        entities:
+          type: array
+    output_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - accepted
+      properties:
+        status:
+          type: string
+          const: "stubbed"
+        accepted:
+          type: boolean
+    risk_level: "medium"
+    side_effects: true

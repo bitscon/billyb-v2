@@ -1,9 +1,9 @@
 """Command interpreter with deterministic Phase 1 fallback and Phase 2 lane semantics.
 
 This module stays below execution authority:
-- no command execution
-- no tool invocation
-- no LLM usage
+- no autonomous command execution
+- tool invocation only through Phase 5 explicit approval + Phase 6 stub backend
+- optional LLM usage is schema-guarded and cannot execute side effects
 - no routing side effects beyond envelope interpretation
 """
 
@@ -23,6 +23,12 @@ import jsonschema
 import yaml
 
 from v2.core import llm_api
+from v2.core.command_memory import (
+    FileBackedMemoryStore,
+    InMemoryMemoryStore,
+    MemoryEvent,
+    MemoryStore,
+)
 
 
 Lane = str
@@ -60,6 +66,8 @@ _phase3_enabled = False
 _phase4_enabled = False
 _phase4_explanation_enabled = False
 _phase5_enabled = False
+_phase8_enabled = False
+_phase8_approval_mode = "step"
 
 _PHASE5_PENDING_TTL_SECONDS = 300
 _PHASE5_APPROVAL_PHRASES = {
@@ -68,6 +76,13 @@ _PHASE5_APPROVAL_PHRASES = {
     "approved",
     "go ahead",
     "do it",
+}
+_PHASE8_PENDING_TTL_SECONDS = 300
+_PHASE8_RISK_ORDER = {
+    "low": 0,
+    "medium": 1,
+    "high": 2,
+    "critical": 3,
 }
 
 _PHASE4_DEFAULT_POLICY = {
@@ -83,14 +98,104 @@ _PHASE4_DEFAULT_POLICY = {
 class PendingAction:
     action_id: str
     envelope_snapshot: Envelope
+    resolved_tool_contract: "ToolContract | None"
     created_at: str
     expires_at: str
     consumed: bool
     awaiting_next_user_turn: bool
 
 
+@dataclass(frozen=True)
+class PlanStep:
+    step_id: str
+    description: str
+    tool_contract: "ToolContract"
+    parameters: Dict[str, Any]
+    risk_level: str
+    envelope_snapshot: Envelope
+
+
+@dataclass(frozen=True)
+class ExecutionPlan:
+    plan_id: str
+    intent: str
+    steps: List[PlanStep]
+
+
+@dataclass
+class PendingPlan:
+    plan: ExecutionPlan
+    created_at: str
+    expires_at: str
+    awaiting_next_user_turn: bool
+    next_step_index: int
+
+
 _pending_action: PendingAction | None = None
 _execution_events: List[Dict[str, Any]] = []
+_memory_store: MemoryStore = InMemoryMemoryStore()
+_pending_plan: PendingPlan | None = None
+
+
+@dataclass(frozen=True)
+class ToolContract:
+    tool_name: str
+    intent: str
+    description: str
+    input_schema: Dict[str, Any]
+    output_schema: Dict[str, Any]
+    risk_level: str
+    side_effects: bool
+
+
+class ToolInvoker(Protocol):
+    def invoke(self, contract: ToolContract, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        ...
+
+
+class StubToolInvoker:
+    """Stub-only backend: validates schemas and returns deterministic mock results."""
+
+    def __init__(self) -> None:
+        self._invocations: List[Dict[str, Any]] = []
+
+    def invoke(self, contract: ToolContract, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        jsonschema.validate(parameters, contract.input_schema)
+        result = self._build_result(contract, parameters)
+        jsonschema.validate(result, contract.output_schema)
+        self._invocations.append(
+            {
+                "invocation_id": f"invoke-{uuid.uuid4()}",
+                "tool_name": contract.tool_name,
+                "intent": contract.intent,
+                "parameters": copy.deepcopy(parameters),
+                "result": copy.deepcopy(result),
+                "invoked_at": _utcnow().isoformat(),
+            }
+        )
+        return copy.deepcopy(result)
+
+    def get_invocations(self) -> List[Dict[str, Any]]:
+        return copy.deepcopy(self._invocations)
+
+    def reset(self) -> None:
+        self._invocations = []
+
+    @staticmethod
+    def _build_result(contract: ToolContract, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        if contract.intent == "plan.create_empty_file":
+            return {
+                "status": "stubbed",
+                "created": True,
+                "path": str(parameters.get("path", "$HOME/untitled.txt")),
+            }
+        return {
+            "status": "stubbed",
+            "accepted": True,
+        }
+
+
+_tool_invoker: ToolInvoker = StubToolInvoker()
 
 
 def _normalize(text: str) -> str:
@@ -494,6 +599,51 @@ def _phase4_policy_rules() -> dict[str, dict[str, Any]]:
     return rules
 
 
+@lru_cache(maxsize=1)
+def _phase6_tool_contract_registry() -> dict[str, ToolContract]:
+    registry_path = Path(__file__).resolve().parents[1] / "contracts" / "intent_tool_contracts.yaml"
+    try:
+        payload = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        payload = {}
+
+    raw_contracts = payload.get("contracts", [])
+    if not isinstance(raw_contracts, list):
+        return {}
+
+    registry: dict[str, ToolContract] = {}
+    for item in raw_contracts:
+        if not isinstance(item, dict):
+            continue
+        try:
+            contract = ToolContract(
+                tool_name=str(item["tool_name"]),
+                intent=str(item["intent"]),
+                description=str(item["description"]),
+                input_schema=dict(item["input_schema"]),
+                output_schema=dict(item["output_schema"]),
+                risk_level=str(item["risk_level"]),
+                side_effects=bool(item["side_effects"]),
+            )
+        except Exception:
+            continue
+
+        if contract.intent in registry:
+            continue
+        registry[contract.intent] = contract
+    return registry
+
+
+def get_tool_contract_registry() -> Dict[str, ToolContract]:
+    return dict(_phase6_tool_contract_registry())
+
+
+def _resolve_tool_contract(intent: str) -> ToolContract | None:
+    if not isinstance(intent, str) or not intent.strip():
+        return None
+    return _phase6_tool_contract_registry().get(intent.strip())
+
+
 def _call_llm_for_intent_json(utterance: str, envelope: Envelope) -> str | None:
     """Isolated LLM call for Phase 3 extraction."""
     model_config = _load_model_config()
@@ -709,10 +859,120 @@ def set_phase5_enabled(enabled: bool) -> None:
     _phase5_enabled = bool(enabled)
 
 
+def set_phase8_enabled(enabled: bool) -> None:
+    global _phase8_enabled
+    _phase8_enabled = bool(enabled)
+
+
+def set_phase8_approval_mode(mode: str) -> None:
+    global _phase8_approval_mode
+    normalized = _normalize(mode).lower()
+    if normalized not in {"step", "plan"}:
+        raise ValueError(f"Unsupported Phase 8 approval mode: {mode}")
+    _phase8_approval_mode = normalized
+
+
+def set_tool_invoker(invoker: ToolInvoker) -> None:
+    global _tool_invoker
+    _tool_invoker = invoker
+
+
+def configure_memory_store(mode: str, *, path: str | None = None) -> None:
+    """Configure append-only memory store backend.
+
+    Supported modes:
+    - in_memory
+    - file (requires path)
+    """
+    global _memory_store
+    normalized = _normalize(mode).lower()
+    if normalized == "in_memory":
+        _memory_store = InMemoryMemoryStore()
+        return
+    if normalized == "file":
+        if not path or not str(path).strip():
+            raise ValueError("File-backed memory mode requires a non-empty path.")
+        _memory_store = FileBackedMemoryStore(path)
+        return
+    raise ValueError(f"Unsupported memory store mode: {mode}")
+
+
+def set_memory_store(store: MemoryStore) -> None:
+    global _memory_store
+    _memory_store = store
+
+
+def get_memory_events_last(count: int) -> List[Dict[str, Any]]:
+    return [event.to_dict() for event in _memory_store.get_last(count)]
+
+
+def get_memory_events_by_intent(intent: str) -> List[Dict[str, Any]]:
+    return [event.to_dict() for event in _memory_store.get_by_intent(intent)]
+
+
+def get_memory_events_by_tool(tool_name: str) -> List[Dict[str, Any]]:
+    return [event.to_dict() for event in _memory_store.get_by_tool(tool_name)]
+
+
+def reset_phase7_memory() -> None:
+    _memory_store.clear()
+
+
+def get_tool_invocations() -> List[Dict[str, Any]]:
+    if isinstance(_tool_invoker, StubToolInvoker):
+        return _tool_invoker.get_invocations()
+    return []
+
+
+def reset_phase8_state() -> None:
+    global _pending_plan
+    _pending_plan = None
+
+
+def _serialize_plan_step(step: PlanStep) -> Dict[str, Any]:
+    return {
+        "step_id": step.step_id,
+        "description": step.description,
+        "tool_contract": {
+            "tool_name": step.tool_contract.tool_name,
+            "intent": step.tool_contract.intent,
+            "description": step.tool_contract.description,
+            "risk_level": step.tool_contract.risk_level,
+            "side_effects": step.tool_contract.side_effects,
+        },
+        "parameters": copy.deepcopy(step.parameters),
+        "risk_level": step.risk_level,
+    }
+
+
+def _serialize_plan(plan: ExecutionPlan) -> Dict[str, Any]:
+    return {
+        "plan_id": plan.plan_id,
+        "intent": plan.intent,
+        "steps": [_serialize_plan_step(step) for step in plan.steps],
+    }
+
+
+def get_pending_plan() -> Dict[str, Any] | None:
+    if _pending_plan is None:
+        return None
+    return {
+        "plan": _serialize_plan(_pending_plan.plan),
+        "created_at": _pending_plan.created_at,
+        "expires_at": _pending_plan.expires_at,
+        "awaiting_next_user_turn": _pending_plan.awaiting_next_user_turn,
+        "next_step_index": _pending_plan.next_step_index,
+    }
+
+
 def reset_phase5_state() -> None:
     global _pending_action, _execution_events
     _pending_action = None
+    reset_phase8_state()
     _execution_events = []
+    reset_phase7_memory()
+    if isinstance(_tool_invoker, StubToolInvoker):
+        _tool_invoker.reset()
 
 
 def get_pending_action() -> PendingAction | None:
@@ -749,12 +1009,117 @@ def _is_actionable_envelope(envelope: Envelope) -> bool:
     return lane == "PLAN" and (allowed or requires_approval)
 
 
+def _split_plan_clauses(utterance: str) -> List[str]:
+    normalized = _normalize(utterance)
+    if not normalized:
+        return []
+    parts = re.split(r"\b(?:and then|then|and)\b", normalized, flags=re.IGNORECASE)
+    clauses = [_normalize(part.strip(" ,.;")) for part in parts if _normalize(part.strip(" ,.;"))]
+    return clauses or [normalized]
+
+
+def _resolve_plan_step_intent(clause: str) -> str | None:
+    lowered = clause.lower()
+    if "empty text file" in lowered or ("empty" in lowered and "file" in lowered):
+        return "plan.create_empty_file"
+    if _is_action_like(clause):
+        return "plan.user_action_request"
+    return None
+
+
+def _plan_risk_summary(plan: ExecutionPlan) -> str:
+    worst = "low"
+    for step in plan.steps:
+        if _PHASE8_RISK_ORDER.get(step.risk_level, 0) > _PHASE8_RISK_ORDER.get(worst, 0):
+            worst = step.risk_level
+    return worst
+
+
+def build_execution_plan(envelope: Envelope) -> ExecutionPlan:
+    if not _is_actionable_envelope(envelope):
+        raise ValueError("Envelope is not actionable for planning.")
+
+    utterance = str(envelope.get("utterance", ""))
+    fallback_intent = str(envelope.get("intent", ""))
+    clauses = _split_plan_clauses(utterance)
+    if not clauses:
+        raise ValueError("No actionable plan steps found in utterance.")
+
+    steps: List[PlanStep] = []
+    for index, clause in enumerate(clauses, start=1):
+        step_intent = _resolve_plan_step_intent(clause)
+        if step_intent is None and len(clauses) == 1 and fallback_intent and _resolve_tool_contract(fallback_intent):
+            step_intent = fallback_intent
+        if step_intent is None:
+            raise ValueError(f"Unmappable plan step: {clause}")
+        contract = _resolve_tool_contract(step_intent)
+        if contract is None:
+            raise ValueError(f"No tool contract found for step intent: {step_intent}")
+
+        step_envelope = copy.deepcopy(envelope)
+        step_envelope["utterance"] = clause
+        step_envelope["intent"] = step_intent
+        step_envelope["lane"] = "PLAN"
+        step_envelope["requires_approval"] = True
+
+        parameters = _tool_parameters_from_envelope(contract, step_envelope)
+        steps.append(
+            PlanStep(
+                step_id=f"step-{index}",
+                description=clause,
+                tool_contract=contract,
+                parameters=parameters,
+                risk_level=contract.risk_level,
+                envelope_snapshot=step_envelope,
+            )
+        )
+
+    return ExecutionPlan(
+        plan_id=f"plan-{uuid.uuid4()}",
+        intent=fallback_intent or "plan.user_action_request",
+        steps=steps,
+    )
+
+
+def _create_pending_plan(plan: ExecutionPlan) -> PendingPlan:
+    now = _utcnow()
+    return PendingPlan(
+        plan=plan,
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(seconds=_PHASE8_PENDING_TTL_SECONDS)).isoformat(),
+        awaiting_next_user_turn=True,
+        next_step_index=0,
+    )
+
+
+def _pending_plan_is_expired(pending: PendingPlan) -> bool:
+    return _utcnow() > _parse_iso(pending.expires_at)
+
+
+def _plan_approval_message(pending: PendingPlan) -> str:
+    plan = pending.plan
+    risk_summary = _plan_risk_summary(plan)
+    if _phase8_approval_mode == "plan":
+        return (
+            f"Proposed plan {plan.plan_id}: {len(plan.steps)} steps, risk={risk_summary}. "
+            "To approve full-plan execution, reply exactly: approve"
+        )
+    next_step = plan.steps[pending.next_step_index]
+    return (
+        f"Proposed plan {plan.plan_id}: {len(plan.steps)} steps, risk={risk_summary}. "
+        f"Next step is {next_step.step_id}: {next_step.description}. "
+        "To approve this step, reply exactly: approve"
+    )
+
+
 def _create_pending_action(envelope: Envelope) -> PendingAction:
     now = _utcnow()
     action_id = f"act-{uuid.uuid4()}"
+    resolved_tool_contract = _resolve_tool_contract(str(envelope.get("intent", "")))
     return PendingAction(
         action_id=action_id,
         envelope_snapshot=copy.deepcopy(envelope),
+        resolved_tool_contract=resolved_tool_contract,
         created_at=now.isoformat(),
         expires_at=(now + timedelta(seconds=_PHASE5_PENDING_TTL_SECONDS)).isoformat(),
         consumed=False,
@@ -772,27 +1137,265 @@ def _approval_request_message(pending: PendingAction) -> str:
     )
 
 
+def _tool_parameters_from_envelope(contract: ToolContract, envelope: Envelope) -> Dict[str, Any]:
+    if contract.intent == "plan.create_empty_file":
+        target_dir = "$HOME"
+        for entity in envelope.get("entities", []):
+            if not isinstance(entity, dict):
+                continue
+            if entity.get("name") != "target_location":
+                continue
+            normalized = entity.get("normalized")
+            value = normalized if isinstance(normalized, str) else entity.get("value")
+            if isinstance(value, str) and value.strip():
+                target_dir = value.strip()
+                break
+        return {"path": f"{target_dir.rstrip('/')}/untitled.txt"}
+
+    return {
+        "utterance": str(envelope.get("utterance", "")),
+        "entities": copy.deepcopy(envelope.get("entities", [])),
+    }
+
+
+def _record_memory_event(
+    *,
+    envelope: Envelope | None,
+    contract: ToolContract | None,
+    parameters: Dict[str, Any],
+    execution_result: Dict[str, Any],
+    success: bool,
+) -> None:
+    intent = str((envelope or {}).get("intent", "unknown.intent"))
+    tool_name = contract.tool_name if contract is not None else "unresolved.tool"
+    event = MemoryEvent(
+        timestamp=_utcnow().isoformat(),
+        intent=intent,
+        tool_name=tool_name,
+        parameters=copy.deepcopy(parameters),
+        execution_result=copy.deepcopy(execution_result),
+        success=bool(success),
+    )
+    try:
+        _memory_store.append(event)
+    except Exception:
+        # Memory recording must never change execution behavior.
+        return
+
+
 def execute_pending_action(action_id: str) -> Dict[str, Any]:
     global _pending_action, _execution_events
-    if _pending_action is None:
-        raise ValueError("No pending action available.")
-    if _pending_action.action_id != action_id:
-        raise ValueError("Pending action id mismatch.")
-    if _pending_action.consumed:
-        raise ValueError("Pending action already consumed.")
-    if _pending_is_expired(_pending_action):
-        raise ValueError("Pending action expired.")
+    snapshot = copy.deepcopy(_pending_action.envelope_snapshot) if _pending_action else None
+    contract = _pending_action.resolved_tool_contract if _pending_action else None
+    parameters: Dict[str, Any] = {}
+    if snapshot is not None and contract is not None:
+        parameters = _tool_parameters_from_envelope(contract, snapshot)
 
-    event = {
-        "event_id": f"exec-{uuid.uuid4()}",
-        "action_id": _pending_action.action_id,
-        "executed_at": _utcnow().isoformat(),
-        "status": "executed_stub",
-        "envelope": copy.deepcopy(_pending_action.envelope_snapshot),
+    try:
+        if _pending_action is None:
+            raise ValueError("No pending action available.")
+        if _pending_action.action_id != action_id:
+            raise ValueError("Pending action id mismatch.")
+        if _pending_action.consumed:
+            raise ValueError("Pending action already consumed.")
+        if _pending_is_expired(_pending_action):
+            raise ValueError("Pending action expired.")
+        contract = _pending_action.resolved_tool_contract
+        if contract is None:
+            raise ValueError("No tool contract resolved for pending action.")
+
+        parameters = _tool_parameters_from_envelope(contract, _pending_action.envelope_snapshot)
+        result = _tool_invoker.invoke(contract, parameters)
+
+        event = {
+            "event_id": f"exec-{uuid.uuid4()}",
+            "action_id": _pending_action.action_id,
+            "executed_at": _utcnow().isoformat(),
+            "status": "executed_stub",
+            "envelope": copy.deepcopy(_pending_action.envelope_snapshot),
+            "tool_contract": {
+                "tool_name": contract.tool_name,
+                "intent": contract.intent,
+                "description": contract.description,
+                "risk_level": contract.risk_level,
+                "side_effects": contract.side_effects,
+            },
+            "tool_result": copy.deepcopy(result),
+        }
+        _pending_action.consumed = True
+        _execution_events.append(event)
+        _record_memory_event(
+            envelope=_pending_action.envelope_snapshot,
+            contract=contract,
+            parameters=parameters,
+            execution_result=result,
+            success=True,
+        )
+        return copy.deepcopy(event)
+    except Exception as exc:
+        _record_memory_event(
+            envelope=snapshot,
+            contract=contract,
+            parameters=parameters,
+            execution_result={"error": str(exc)},
+            success=False,
+        )
+        raise
+
+
+def _execute_plan_step(step: PlanStep, *, plan_id: str, step_index: int) -> Dict[str, Any]:
+    global _pending_action
+    if _pending_action is not None:
+        raise ValueError("Cannot execute plan step while another pending action exists.")
+
+    pending = _create_pending_action(step.envelope_snapshot)
+    pending.resolved_tool_contract = step.tool_contract
+    _pending_action = pending
+    try:
+        event = execute_pending_action(pending.action_id)
+    finally:
+        _pending_action = None
+
+    plan_metadata = {
+        "plan_id": plan_id,
+        "step_id": step.step_id,
+        "step_index": step_index,
     }
-    _pending_action.consumed = True
-    _execution_events.append(event)
-    return copy.deepcopy(event)
+    event["plan_step"] = copy.deepcopy(plan_metadata)
+    if _execution_events:
+        _execution_events[-1]["plan_step"] = copy.deepcopy(plan_metadata)
+    return event
+
+
+def _execute_plan_steps_from_pending() -> Dict[str, Any]:
+    global _pending_plan
+    if _pending_plan is None:
+        raise ValueError("No pending plan available.")
+
+    events: List[Dict[str, Any]] = []
+    while _pending_plan.next_step_index < len(_pending_plan.plan.steps):
+        index = _pending_plan.next_step_index
+        step = _pending_plan.plan.steps[index]
+        event = _execute_plan_step(step, plan_id=_pending_plan.plan.plan_id, step_index=index)
+        events.append(event)
+        _pending_plan.next_step_index += 1
+        if _phase8_approval_mode == "step":
+            break
+    return {
+        "plan_id": _pending_plan.plan.plan_id,
+        "events": events,
+    }
+
+
+def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
+    global _pending_plan
+    normalized = _normalize(utterance)
+
+    if not _phase5_enabled:
+        return {
+            "type": "phase5_disabled",
+            "executed": False,
+            "envelope": interpret_utterance(utterance),
+            "message": "",
+        }
+
+    if _pending_plan is None:
+        if _is_valid_approval_phrase(normalized):
+            return {
+                "type": "approval_rejected",
+                "executed": False,
+                "message": "Approval rejected: no pending plan to approve.",
+            }
+
+        envelope = interpret_utterance(utterance)
+        if not _is_actionable_envelope(envelope):
+            return {
+                "type": "no_action",
+                "executed": False,
+                "envelope": envelope,
+                "message": "",
+            }
+
+        try:
+            plan = build_execution_plan(envelope)
+        except Exception as exc:
+            return {
+                "type": "plan_rejected",
+                "executed": False,
+                "envelope": envelope,
+                "message": f"Plan rejected: {exc}",
+            }
+
+        _pending_plan = _create_pending_plan(plan)
+        return {
+            "type": "plan_approval_required",
+            "executed": False,
+            "plan": _serialize_plan(plan),
+            "message": _plan_approval_message(_pending_plan),
+        }
+
+    if _pending_plan_is_expired(_pending_plan):
+        _pending_plan = None
+        return {
+            "type": "approval_expired",
+            "executed": False,
+            "message": "Approval rejected: pending plan expired. Re-submit the action request.",
+        }
+
+    if not _pending_plan.awaiting_next_user_turn:
+        return {
+            "type": "approval_rejected",
+            "executed": False,
+            "message": "Approval rejected: approval window closed. Re-submit the action request.",
+        }
+
+    _pending_plan.awaiting_next_user_turn = False
+    if not _is_valid_approval_phrase(normalized):
+        _pending_plan = None
+        return {
+            "type": "approval_rejected",
+            "executed": False,
+            "message": "Approval rejected: explicit phrase required. Re-submit the action request.",
+        }
+
+    try:
+        result = _execute_plan_steps_from_pending()
+    except Exception as exc:
+        _pending_plan = None
+        return {
+            "type": "execution_rejected",
+            "executed": False,
+            "message": f"Execution rejected: {exc}",
+        }
+
+    if _pending_plan is None:
+        return {
+            "type": "execution_rejected",
+            "executed": False,
+            "message": "Execution rejected: pending plan state unavailable.",
+        }
+
+    events = result["events"]
+    if _pending_plan.next_step_index >= len(_pending_plan.plan.steps):
+        plan_id = _pending_plan.plan.plan_id
+        _pending_plan = None
+        return {
+            "type": "plan_executed",
+            "executed": True,
+            "plan_id": plan_id,
+            "execution_events": events,
+            "message": "Plan execution completed.",
+        }
+
+    _pending_plan.awaiting_next_user_turn = True
+    return {
+        "type": "step_executed",
+        "executed": True,
+        "plan_id": _pending_plan.plan.plan_id,
+        "execution_events": events,
+        "remaining_steps": len(_pending_plan.plan.steps) - _pending_plan.next_step_index,
+        "message": _plan_approval_message(_pending_plan),
+    }
 
 
 def process_user_message(utterance: str) -> Dict[str, Any]:
@@ -801,6 +1404,9 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
     This function keeps Phases 1-4 authoritative for interpretation and policy.
     It only adds explicit conversational approval and single-use execution gating.
     """
+    if _phase8_enabled:
+        return _process_user_message_phase8(utterance)
+
     global _pending_action
     normalized = _normalize(utterance)
 
@@ -864,7 +1470,17 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
         }
 
     action_id = _pending_action.action_id
-    event = execute_pending_action(action_id)
+    try:
+        event = execute_pending_action(action_id)
+    except Exception as exc:
+        _pending_action = None
+        return {
+            "type": "execution_rejected",
+            "executed": False,
+            "action_id": action_id,
+            "message": f"Execution rejected: {exc}",
+        }
+
     _pending_action = None
     return {
         "type": "executed",
