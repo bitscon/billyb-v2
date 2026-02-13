@@ -77,6 +77,10 @@ _PHASE5_APPROVAL_PHRASES = {
     "go ahead",
     "do it",
 }
+
+_PHASE9_ENGINEER_MODE_DEPRECATED_MESSAGE = (
+    "Engineer mode is deprecated. Continue in governed mode; approvals are requested automatically when needed."
+)
 _PHASE8_PENDING_TTL_SECONDS = 300
 _PHASE8_RISK_ORDER = {
     "low": 0,
@@ -200,6 +204,36 @@ _tool_invoker: ToolInvoker = StubToolInvoker()
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _is_deprecated_engineer_mode_input(text: str) -> bool:
+    lowered = _normalize(text).lower()
+    return (
+        lowered == "/engineer"
+        or lowered.startswith("/engineer ")
+        or lowered == "engineer mode"
+        or lowered == "enter engineer mode"
+        or lowered == "switch to engineer mode"
+    )
+
+
+def _phase9_normalize_utterance(text: str) -> str:
+    normalized = _normalize(text)
+    lowered = normalized.lower()
+    if lowered.startswith("save ") and "file" in lowered and "home directory" in lowered:
+        # Route natural-language save requests through existing PLAN policy/approval flow.
+        return re.sub(r"(?i)^save\b", "create", normalized, count=1)
+    return normalized
+
+
+def _phase9_engineer_mode_info_response(utterance: str) -> Dict[str, Any]:
+    normalized = _normalize(utterance)
+    return {
+        "type": "mode_info",
+        "executed": False,
+        "envelope": interpret_utterance(normalized),
+        "message": _PHASE9_ENGINEER_MODE_DEPRECATED_MESSAGE,
+    }
 
 
 def _envelope(
@@ -1300,6 +1334,9 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
         }
 
     if _pending_plan is None:
+        if _is_deprecated_engineer_mode_input(normalized):
+            return _phase9_engineer_mode_info_response(normalized)
+
         if _is_valid_approval_phrase(normalized):
             return {
                 "type": "approval_rejected",
@@ -1307,7 +1344,8 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
                 "message": "Approval rejected: no pending plan to approve.",
             }
 
-        envelope = interpret_utterance(utterance)
+        routed_utterance = _phase9_normalize_utterance(normalized)
+        envelope = interpret_utterance(routed_utterance)
         if not _is_actionable_envelope(envelope):
             return {
                 "type": "no_action",
@@ -1419,6 +1457,9 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
         }
 
     if _pending_action is None:
+        if _is_deprecated_engineer_mode_input(normalized):
+            return _phase9_engineer_mode_info_response(normalized)
+
         if _is_valid_approval_phrase(normalized):
             return {
                 "type": "approval_rejected",
@@ -1426,7 +1467,8 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                 "message": "Approval rejected: no pending action to approve.",
             }
 
-        envelope = interpret_utterance(utterance)
+        routed_utterance = _phase9_normalize_utterance(normalized)
+        envelope = interpret_utterance(routed_utterance)
         if not _is_actionable_envelope(envelope):
             return {
                 "type": "no_action",
