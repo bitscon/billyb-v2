@@ -4,49 +4,63 @@
 - Tag: `maturity-level-10`
 - Status: `Level 10 - Unified Conversational Governance` achieved
 
-## Phase Summary (1-6)
-1. `Phase 1 - Deterministic Interpreter`
-   Deterministic envelope generation with no execution, no tools, and no LLM dependency.
-2. `Phase 2 - Semantic Lane Routing`
-   Lane-level semantic routing with explicit confidence threshold and mandatory deterministic fallback.
-3. `Phase 3 - Structured Intent Extraction`
-   Optional LLM extraction for `intent/entities/confidence` with strict schema validation, bounded retries, and safe fallback.
-4. `Phase 4 - Hybrid Policy Evaluation`
-   Deterministic policy decisions (`allowed`, `risk_level`, `requires_approval`) from static rules, with optional explanation-only LLM path.
-5. `Phase 5 - Conversational Approval Gating`
-   Pending action lifecycle, exact-match approval phrases, TTL, single-use approval, and single-shot execution gate.
-6. `Phase 6 - Explicitly Authorized Execution`
-   Execution remains strictly explicit, auditable, and human-approved per action.
+## Current Maturity
+Billy is operating at Level 10 with end-to-end governed conversational routing.
 
-## Guardrails Preserved
-- No implicit approval
-- No autonomous execution
-- No action chaining
-- No background execution
-- No policy decisions delegated to LLMs
+## Phase Summary (1-9)
+1. `Phase 1 - Deterministic Interpreter`
+   Deterministic intent envelope generation.
+2. `Phase 2 - Semantic Lane Routing`
+   Lane classification with confidence threshold and mandatory deterministic fallback.
+3. `Phase 3 - Structured Intent Extraction`
+   Schema-validated JSON extraction (`intent`, `entities`, `confidence`) with bounded retries and fallback.
+4. `Phase 4 - Deterministic Policy Evaluation`
+   Deterministic policy decisions (`allowed`, `risk_level`, `requires_approval`) with optional explanation-only LLM path.
+5. `Phase 5 - Explicit Conversational Approval Gating`
+   Pending-action lifecycle, exact approval phrases, TTL, single-use approval, single-shot execution gate.
+6. `Phase 6 - Contract-Bound Tool Execution`
+   Static intent-to-tool contracts with typed, stubbed execution backend and auditable events.
+7. `Phase 7 - Append-Only Memory`
+   Append-only memory recording for execution attempts plus deterministic recall APIs.
+8. `Phase 8 - Approval-Gated Multi-Step Planning`
+   Plan construction as explicit data; step/plan approval modes; ordered execution through existing gates.
+9. `Phase 9 - Conversational Entrypoint Unification`
+   Unified conversational routing through governed pipeline; deprecated engineer-mode inputs are informational only.
 
 ## Maturity Level 9 — Approval-Gated Planning & Execution (Frozen)
+Capabilities:
+- Multi-step plan construction with contract-mapped steps
+- Approval-gated ordered execution
+- Per-step auditable execution and memory recording
 
-### Capabilities
-- Deterministic intent interpretation (Phase 1)
-- Semantic lane routing with fallback (Phase 2)
-- Structured intent & entity extraction (Phase 3)
-- Deterministic policy evaluation (Phase 4)
-- Explicit conversational approval gating (Phase 5)
-- Contract-bound execution backends (Phase 6)
-- Append-only execution memory & recall (Phase 7)
-- Multi-step plan construction with approval-gated execution (Phase 8)
-
-### Guarantees
-- No execution without explicit approval
-- No autonomous behavior
-- No dynamic replanning
-- No memory-driven behavior changes
-- All actions are auditable and replayable
-
-### Status
-Frozen. All phases below Level 9 are treated as infrastructure and must not be modified without explicit promotion.
+Status:
+Frozen infrastructure. No dynamic replanning, auto-retry, or implicit step skipping.
 
 ## Maturity Level 10 — Unified Conversational Governance (Frozen)
+Capabilities:
+- All conversational input is governed through a single entrypoint
+- Natural-language action requests route to policy + approval flow
+- Legacy engineer-mode inputs are deprecated and non-blocking
+- Ambiguous input routes to `CLARIFY`, not legacy rejection
 
-All conversational input is governed; legacy modes deprecated; no rejections for normal language.
+Status:
+Frozen UX/governance infrastructure. No legacy mode revival or shortcut authority paths.
+
+## Freeze Policy
+Once a phase is approved and frozen:
+- No tuning, heuristic expansion, or semantic drift is allowed in that phase.
+- Any change requires explicit maturity promotion and acceptance.
+- Freeze applies to behavior, gates, and user-facing governance semantics.
+
+## Docs Gate (Required for Every Future Phase)
+A phase/PR is incomplete unless it includes:
+- `README.md` update
+- `MATURITY.md` update
+- Onboarding update when user-facing behavior changes
+- Test proof that behavior and docs are aligned
+
+## Contracts Index
+- `v2/contracts/intent_policy_rules.yaml`
+  Deterministic policy rules keyed by `lane::intent`.
+- `v2/contracts/intent_tool_contracts.yaml`
+  Static intent-to-tool contract mapping used by governed execution.

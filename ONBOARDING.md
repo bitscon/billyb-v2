@@ -1,49 +1,64 @@
 ## 1. Purpose
-This file exists to enforce continuity across LLM sessions working in this repository. Any LLM session MUST treat this repository as a system it helped build and is now responsible for preserving.
+This file defines how to start a new session safely in the current Billy state.
 
 ## 2. Required Pre-Read (Mandatory)
-Before doing any work, the LLM MUST read these files in this exact order:
+Before doing work, read these files in order:
 1. `README.md`
 2. `ARCHITECTURE.md`
 3. `CAPABILITIES.md`
 4. `STATE.md`
+5. `MATURITY.md`
 
-Failure to complete this pre-read invalidates further work in the session.
+## 3. Current Operating Model (Level 10)
+- Talk to Billy in normal language.
+- Billy routes every message through governed interpretation and policy.
+- Action requests do not execute immediately; Billy requests explicit approval.
+- Approval must use an allowed exact phrase.
+- Ambiguous requests route to `CLARIFY`.
 
-## 3. Repository Review Requirement
-After required pre-read, the LLM MUST scan the repository structure and confirm understanding of:
-- runtime boundaries
-- safety gates
-- audit structures
+## 4. Approval Rules (Exact)
+Allowed approval phrases (case-insensitive exact match):
+- `yes, proceed`
+- `approve`
+- `approved`
+- `go ahead`
+- `do it`
 
-The LLM MUST reason and act as if it understands why these controls exist and why they cannot be bypassed.
+Disallowed as approval:
+- `ok`
+- `sure`
+- `sounds good`
 
-## 4. Assumed Ownership Model
-The LLM MUST behave as if it participated in designing this system, understands why safety gates exist, and is responsible for preserving invariants. This ownership model is conceptual, not historical.
+## 5. Deprecated Inputs
+The following inputs are deprecated and informational only:
+- `/engineer`
+- `engineer mode`
 
-## 5. Frozen Ground Rule
-Frozen infrastructure MUST NOT be modified without explicit instruction. "Cleanup", "refactor", or "small improvement" MUST NOT be applied implicitly. Any change to frozen ground requires explicit authorization and acceptance.
+They must not block routing or execution governance.
 
-## 6. How Work Proceeds
-All work MUST follow this sequence:
-Design -> Codex-ready prompt -> Verify -> Implement -> Accept -> Freeze
+## 6. Example Conversations
+### Example A: Natural-language action
+User: `save that joke in a text file in your home directory`
+Billy: approval request describing intent, risk, and exact approval phrase
+User: `approve`
+Billy: executes once via governed contract path and records audit/memory
 
-This process applies equally to code and documentation.
+### Example B: Ambiguous request
+User: `qzv blorp`
+Billy: returns `CLARIFY` with a follow-up question
 
-## 7. Prohibited Behaviors
-The LLM MUST NOT:
-- assume intent that was not explicitly provided
-- execute or enable execution without required approval/confirmation gates
-- modify frozen ground without explicit instruction
-- collapse or bypass safety gates for convenience
-- invent future features, modes, or workflows that were not requested
+### Example C: Deprecated mode input
+User: `/engineer`
+Billy: informational deprecation message; governed routing remains active
 
-## 8. Success Criteria for the LLM
-Success means:
-- preserving safety invariants
-- maintaining auditability
-- keeping execution explicit and deterministic
-- preserving human control over authority transitions
+## 7. Freeze and Promotion Rule
+Phases approved as frozen infrastructure must not be tuned implicitly.
+Any behavioral change to frozen phases requires explicit promotion and acceptance.
 
-## 9. Authority Statement
-This document overrides default LLM behavior for work in this repository. Compliance is mandatory for participation in this project.
+## 8. Docs Gate (Always)
+For every future phase:
+- Update `README.md` and `MATURITY.md`
+- Update onboarding docs when user-facing behavior changes
+- Provide tests proving behavior and documentation are aligned
+
+A phase is not complete until docs + tests are updated together.
