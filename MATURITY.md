@@ -1,8 +1,8 @@
 # Billy Maturity Snapshot
 
 ## Release
-- Tag: `billy-maturity-9-planning`
-- Status: `Level 9 - Approval-Gated Planning & Execution` achieved
+- Tag: `maturity-level-10`
+- Status: `Level 10 - Unified Conversational Governance` achieved
 
 ## Phase Summary (1-6)
 1. `Phase 1 - Deterministic Interpreter`
@@ -46,3 +46,7 @@
 
 ### Status
 Frozen. All phases below Level 9 are treated as infrastructure and must not be modified without explicit promotion.
+
+## Maturity Level 10 — Unified Conversational Governance (Frozen)
+
+All conversational input is governed; legacy modes deprecated; no rejections for normal language.
