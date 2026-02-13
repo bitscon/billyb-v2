@@ -1,0 +1,42 @@
+rules:
+  "CHAT::chat.recommend_drink":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Read-only conversational request is allowed."
+
+  "CHAT::chat.identity_location_question":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Identity/context question is allowed in read-only mode."
+
+  "CHAT::chat.general":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "General conversational request is allowed."
+
+  "HELP::*":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Guidance/help requests are allowed."
+
+  "CLARIFY::*":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Clarification requests are allowed."
+
+  "PLAN::plan.create_empty_file":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Local write-like planning request requires approval."
+
+  "PLAN::plan.user_action_request":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Action-like planning request requires approval."
