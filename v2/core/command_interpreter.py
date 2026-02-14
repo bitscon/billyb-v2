@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import shutil
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -108,6 +109,123 @@ _FILESYSTEM_INTENTS = {
     "delete_file",
 }
 _FILESYSTEM_WRITE_INTENTS = {"create_file", "write_file", "append_file", "delete_file"}
+_PHASE19_PERSIST_NOTE_INTENT = "persist_note"
+_PHASE19_NOTES_SUBDIR = ("sandbox", "notes")
+_PHASE19_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+_PHASE21_INTENTS = {"revise_content", "transform_content", "refactor_file"}
+_PHASE22_PROJECT_INTENTS = {
+    "create_project",
+    "update_project",
+    "list_project_artifacts",
+    "delete_project",
+    "open_project_artifact",
+    "project_wide_refactor",
+    "project_documentation_generate",
+}
+_PHASE23_GOAL_INTENTS = {
+    "define_project_goal",
+    "list_project_goals",
+    "describe_project_goal",
+    "list_project_tasks",
+    "task_status",
+    "propose_next_tasks",
+    "complete_task",
+}
+_PHASE24_MILESTONE_INTENTS = {
+    "define_milestone",
+    "list_milestones",
+    "describe_milestone",
+    "achieve_milestone",
+    "project_completion_status",
+    "finalize_project",
+    "archive_project",
+}
+_PHASE20_WORKING_SET_TTL_SECONDS = 1800
+_PHASE20_IMPLICIT_REFERENCE_PHRASES = (
+    "this",
+    "that",
+    "current",
+    "it",
+    "current_working_set",
+    "this note",
+    "that note",
+    "current note",
+    "this page",
+    "that page",
+    "current page",
+    "this file",
+    "that file",
+    "current file",
+    "this draft",
+    "that draft",
+    "current draft",
+    "this concept",
+    "that concept",
+    "current concept",
+    "this text",
+    "that text",
+    "this snippet",
+    "that snippet",
+    "this thought",
+    "that thought",
+    "this idea",
+    "that idea",
+)
+_PHASE20_IMPLICIT_REFERENCE_PLACEHOLDERS = {
+    "this",
+    "that",
+    "it",
+    "current",
+    "current_working_set",
+    "this note",
+    "that note",
+    "current note",
+    "this page",
+    "that page",
+    "current page",
+    "this file",
+    "that file",
+    "current file",
+    "this draft",
+    "that draft",
+    "current draft",
+    "this concept",
+    "that concept",
+    "current concept",
+    "this text",
+    "that text",
+    "this snippet",
+    "that snippet",
+    "this thought",
+    "that thought",
+    "this idea",
+    "that idea",
+}
+_PHASE20_CODE_FILE_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cs",
+    ".go",
+    ".h",
+    ".hpp",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".m",
+    ".mm",
+    ".php",
+    ".py",
+    ".rb",
+    ".rs",
+    ".scala",
+    ".sh",
+    ".sql",
+    ".swift",
+    ".ts",
+    ".tsx",
+}
 
 _CONVERSATIONAL_PREFIXES = (
     "what",
@@ -128,6 +246,12 @@ _phase4_enabled = False
 _phase4_explanation_enabled = False
 _phase5_enabled = False
 _phase8_enabled = False
+_phase19_enabled = True
+_phase20_enabled = True
+_phase21_enabled = True
+_phase22_enabled = True
+_phase23_enabled = True
+_phase24_enabled = True
 _phase8_approval_mode = "step"
 
 _PHASE5_PENDING_TTL_SECONDS = 300
@@ -199,6 +323,41 @@ class PendingPlan:
 
 
 @dataclass(frozen=True)
+class ProjectGoal:
+    goal_id: str
+    project_id: str
+    description: str
+    created_at: str
+    metadata: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ProjectTask:
+    task_id: str
+    project_id: str
+    goal_id: str
+    description: str
+    status: str
+    dependencies: List[str]
+    created_at: str
+    completed_at: str | None
+    metadata: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ProjectMilestone:
+    milestone_id: str
+    project_id: str
+    title: str
+    description: str
+    associated_goals: List[str]
+    criteria: List[str]
+    status: str
+    created_at: str
+    achieved_at: str | None
+
+
+@dataclass(frozen=True)
 class AutonomyScope:
     allowed_lanes: List[str]
     allowed_intents: List[str]
@@ -239,6 +398,12 @@ _autonomy_sessions: Dict[str, AutonomySession] = {}
 _autonomy_session_order: List[str] = []
 _phase16_last_response_by_session: Dict[str, Dict[str, Any]] = {}
 _phase16_last_response_global: Dict[str, Any] | None = None
+_phase20_working_set_by_session: Dict[str, Dict[str, Any]] = {}
+_phase22_projects_by_id: Dict[str, Dict[str, Any]] = {}
+_phase22_project_context_by_session: Dict[str, Dict[str, Any]] = {}
+_phase23_goals_by_project_id: Dict[str, List[Dict[str, Any]]] = {}
+_phase23_tasks_by_project_id: Dict[str, List[Dict[str, Any]]] = {}
+_phase24_milestones_by_project_id: Dict[str, List[Dict[str, Any]]] = {}
 
 
 @dataclass(frozen=True)
@@ -353,6 +518,1303 @@ def _envelope_pointer(envelope: Envelope) -> Dict[str, Any]:
     }
 
 
+def _phase20_now_iso() -> str:
+    return _utcnow().isoformat()
+
+
+def _phase20_session_key(explicit_session_id: str | None = None) -> str:
+    if explicit_session_id is not None and str(explicit_session_id).strip():
+        return str(explicit_session_id).strip()
+    return str(current_session_id() or "").strip()
+
+
+def _phase20_parse_iso(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
+def _phase20_working_set_type_from_path(path: str) -> str:
+    suffix = Path(path).suffix.lower()
+    if suffix in {".htm", ".html"}:
+        return "html_page"
+    if suffix in _PHASE20_CODE_FILE_SUFFIXES:
+        return "code_file"
+    if suffix:
+        return "text_note"
+    return "other"
+
+
+def _phase20_working_set_type_from_text(text: str) -> str:
+    lowered = _normalize(text).lower()
+    if "<html" in lowered or "<!doctype html" in lowered:
+        return "html_page"
+    if re.search(r"\bdef\s+\w+\s*\(", lowered) or re.search(r"\bfunction\s+\w+\s*\(", lowered):
+        return "code_file"
+    if lowered:
+        return "text_note"
+    return "other"
+
+
+def _phase20_normalize_working_set_type(raw: str) -> str:
+    allowed = {"text_note", "html_page", "code_file", "other"}
+    normalized = _normalize(raw).lower()
+    if normalized in allowed:
+        return normalized
+    return "other"
+
+
+def _phase20_prune_expired_working_sets() -> None:
+    if not _phase20_working_set_by_session:
+        return
+    now = _utcnow()
+    stale: List[str] = []
+    for session_id, record in _phase20_working_set_by_session.items():
+        if not isinstance(record, dict):
+            stale.append(session_id)
+            continue
+        updated_at = _phase20_parse_iso(str(record.get("updated_at", "")))
+        if updated_at is None:
+            stale.append(session_id)
+            continue
+        if (now - updated_at).total_seconds() > _PHASE20_WORKING_SET_TTL_SECONDS:
+            stale.append(session_id)
+    for session_id in stale:
+        _phase20_working_set_by_session.pop(session_id, None)
+        _emit_observability_event(
+            phase="phase20",
+            event_type="working_set_expired",
+            metadata={"session_id": session_id},
+        )
+
+
+def _phase20_get_working_set(session_id: str | None = None) -> Dict[str, Any] | None:
+    _phase20_prune_expired_working_sets()
+    key = _phase20_session_key(session_id)
+    if not key:
+        return None
+    record = _phase20_working_set_by_session.get(key)
+    if not isinstance(record, dict):
+        return None
+    return copy.deepcopy(record)
+
+
+def _phase20_set_working_set(record: Dict[str, Any], *, reason: str) -> None:
+    if not _phase20_enabled:
+        return
+    _phase20_prune_expired_working_sets()
+    key = _phase20_session_key()
+    if not key:
+        return
+    persisted = copy.deepcopy(record)
+    now = _phase20_now_iso()
+    persisted["timestamp"] = now
+    persisted["updated_at"] = now
+    persisted["type"] = _phase20_normalize_working_set_type(str(persisted.get("type", "")))
+    _phase20_working_set_by_session[key] = persisted
+    project_context = _phase22_get_project_context(key) if _phase22_enabled else None
+    if isinstance(project_context, dict):
+        project_id = str(project_context.get("project_id", ""))
+        project = _phase22_projects_by_id.get(project_id)
+        if isinstance(project, dict):
+            project["working_set"] = copy.deepcopy(persisted)
+            project["updated_at"] = now
+    _emit_observability_event(
+        phase="phase20",
+        event_type="working_set_updated",
+        metadata={
+            "session_id": key,
+            "reason": reason,
+            "content_id": str(persisted.get("content_id", "")),
+            "label": str(persisted.get("label", "")),
+            "path": str(persisted.get("path", "")),
+            "type": str(persisted.get("type", "")),
+        },
+    )
+
+
+def _phase20_clear_working_set(*, reason: str, session_id: str | None = None) -> bool:
+    key = _phase20_session_key(session_id)
+    if not key:
+        return False
+    removed = _phase20_working_set_by_session.pop(key, None)
+    if removed is not None:
+        _emit_observability_event(
+            phase="phase20",
+            event_type="working_set_cleared",
+            metadata={"session_id": key, "reason": reason},
+        )
+        return True
+    return False
+
+
+def _phase20_working_set_message(record: Dict[str, Any] | None) -> str:
+    if not isinstance(record, dict):
+        return "No active working set in this session."
+    label = str(record.get("label", "")).strip()
+    path = str(record.get("path", "")).strip()
+    source = str(record.get("source", "")).strip()
+    if label:
+        return f"You are currently working on '{label}' ({source or 'session'})."
+    if path:
+        return f"You are currently working on {path}."
+    content_id = str(record.get("content_id", "")).strip()
+    if content_id:
+        return f"You are currently working on content {content_id}."
+    return "You have an active working set in this session."
+
+
+def get_working_set_diagnostics(session_id: str | None = None) -> Dict[str, Any]:
+    record = _phase20_get_working_set(session_id)
+    has_working_set = isinstance(record, dict)
+    payload = {
+        "has_working_set": has_working_set,
+        "session_id": _phase20_session_key(session_id),
+        "working_set": record if has_working_set else None,
+        "message": _phase20_working_set_message(record),
+    }
+    return payload
+
+
+def _phase20_implicit_reference_requested(text: str) -> bool:
+    lowered = _normalize(text).lower()
+    if not lowered:
+        return False
+    return any(re.search(rf"\b{re.escape(phrase)}\b", lowered) for phrase in _PHASE20_IMPLICIT_REFERENCE_PHRASES)
+
+
+def _phase20_explicit_label_reference(text: str) -> bool:
+    lowered = _normalize(text).lower()
+    match = re.search(r"\bthat ([a-z0-9_-]+)\b", lowered)
+    if match is None:
+        return False
+    label = str(match.group(1)).strip()
+    generic = {
+        "page",
+        "text",
+        "snippet",
+        "thought",
+        "idea",
+        "note",
+        "draft",
+        "file",
+        "concept",
+        "working_set",
+        "current_working_set",
+        "response",
+        "current",
+        "it",
+        "to",
+        "file",
+        "in",
+        "my",
+        "home",
+        "directory",
+        "workspace",
+        "sandbox",
+        "named",
+        "called",
+        "as",
+        "a",
+        "an",
+        "the",
+    }
+    return label not in generic
+
+
+def _phase20_placeholder_contents(text: str) -> bool:
+    lowered = _normalize(text).lower()
+    if lowered in _PHASE20_IMPLICIT_REFERENCE_PLACEHOLDERS:
+        return True
+    without_article = re.sub(r"^(?:the|a|an)\s+", "", lowered)
+    return without_article in _PHASE20_IMPLICIT_REFERENCE_PLACEHOLDERS
+
+
+def _phase20_reset_request(text: str) -> bool:
+    lowered = _normalize(text).lower().strip(" .!?")
+    return lowered in {
+        "reset current working set",
+        "reset current_working_set",
+        "reset working set",
+        "clear current working set",
+        "clear current_working_set",
+        "clear working set",
+    }
+
+
+def _phase20_task_completion_request(text: str) -> bool:
+    lowered = _normalize(text).lower().strip(" .!?")
+    return bool(
+        re.fullmatch(
+            r"(?:i[' ]?m|i am)\s+done\s+with\s+(?:this|that|the current)\s+page",
+            lowered,
+        )
+    )
+
+
+def _phase20_diagnostics_request(text: str) -> bool:
+    lowered = _normalize(text).lower().strip(" .!?")
+    return lowered in {
+        "current working set",
+        "current_working_set",
+        "working set",
+        "working set status",
+        "what is current working set",
+        "what am i working on",
+    }
+
+
+def _phase20_control_response(text: str) -> Dict[str, Any] | None:
+    normalized = _normalize(text)
+    _phase20_prune_expired_working_sets()
+    if _phase20_reset_request(normalized):
+        _phase20_clear_working_set(reason="explicit_reset")
+        return {
+            "type": "working_set_reset",
+            "executed": False,
+            "message": "Current working set cleared.",
+        }
+    if _phase20_task_completion_request(normalized):
+        _phase20_clear_working_set(reason="task_completion")
+        return {
+            "type": "working_set_reset",
+            "executed": False,
+            "message": "Working set reset for this page.",
+        }
+    if _phase20_diagnostics_request(normalized):
+        diagnostics = get_working_set_diagnostics()
+        _emit_observability_event(
+            phase="phase20",
+            event_type="working_set_diagnostics_requested",
+            metadata={"has_working_set": bool(diagnostics.get("has_working_set", False))},
+        )
+        return {
+            "type": "working_set_info",
+            "executed": False,
+            "working_set": diagnostics.get("working_set"),
+            "message": str(diagnostics.get("message", "")),
+        }
+    return None
+
+
+def _phase22_session_key(explicit_session_id: str | None = None) -> str:
+    if explicit_session_id is not None and str(explicit_session_id).strip():
+        return str(explicit_session_id).strip()
+    return str(current_session_id() or "").strip()
+
+
+def _phase22_slug(value: str) -> str:
+    lowered = _normalize(value).lower()
+    lowered = re.sub(r"[^a-z0-9._-]+", "_", lowered)
+    lowered = re.sub(r"_+", "_", lowered).strip("._-")
+    return lowered or "project"
+
+
+def _phase22_allowed_project_roots() -> List[Path]:
+    return [Path.home().resolve(), _WORKSPACE_ROOT.resolve()]
+
+
+def _phase22_normalize_project_root(path_value: str, *, location_hint: str) -> tuple[str | None, str | None]:
+    return _phase17_normalize_path(path_value, location_hint=location_hint)
+
+
+def _phase22_artifact_type_from_path(path: str) -> str:
+    return _phase20_working_set_type_from_path(path)
+
+
+def _phase22_scan_artifacts(root_path: str) -> List[Dict[str, Any]]:
+    root = Path(root_path)
+    if not root.exists() or not root.is_dir():
+        return []
+    artifacts: List[Dict[str, Any]] = []
+    for candidate in sorted(root.rglob("*")):
+        if not candidate.is_file():
+            continue
+        try:
+            rel = str(candidate.relative_to(root)).replace("\\", "/")
+        except Exception:
+            continue
+        artifacts.append(
+            {
+                "path": rel,
+                "type": _phase22_artifact_type_from_path(str(candidate)),
+                "updated_at": _utcnow().isoformat(),
+            }
+        )
+    return artifacts
+
+
+def _phase22_set_project_context(project: Dict[str, Any], *, session_id: str | None = None) -> None:
+    if not _phase22_enabled:
+        return
+    key = _phase22_session_key(session_id)
+    if not key:
+        return
+    context = {
+        "project_id": str(project.get("project_id", "")),
+        "project_name": str(project.get("name", "")),
+        "root_path": str(project.get("root_path", "")),
+        "updated_at": _utcnow().isoformat(),
+    }
+    _phase22_project_context_by_session[key] = context
+    _emit_observability_event(
+        phase="phase22",
+        event_type="project_context_updated",
+        metadata={
+            "session_id": key,
+            "project_id": context["project_id"],
+            "project_name": context["project_name"],
+        },
+    )
+
+
+def _phase22_get_project_context(session_id: str | None = None) -> Dict[str, Any] | None:
+    key = _phase22_session_key(session_id)
+    if not key:
+        return None
+    record = _phase22_project_context_by_session.get(key)
+    if not isinstance(record, dict):
+        return None
+    project_id = str(record.get("project_id", "")).strip()
+    if project_id and project_id in _phase22_projects_by_id:
+        return copy.deepcopy(record)
+    return None
+
+
+def _phase22_clear_project_context(*, session_id: str | None = None) -> bool:
+    key = _phase22_session_key(session_id)
+    if not key:
+        return False
+    removed = _phase22_project_context_by_session.pop(key, None)
+    return removed is not None
+
+
+def get_project_context_diagnostics(session_id: str | None = None) -> Dict[str, Any]:
+    context = _phase22_get_project_context(session_id)
+    if context is None:
+        return {
+            "has_project_context": False,
+            "project": None,
+            "message": "No active project in this session.",
+        }
+    project_id = str(context.get("project_id", ""))
+    project = copy.deepcopy(_phase22_projects_by_id.get(project_id, {}))
+    if not project:
+        return {
+            "has_project_context": False,
+            "project": None,
+            "message": "No active project in this session.",
+        }
+    return {
+        "has_project_context": True,
+        "project": project,
+        "message": f"You are currently working on project '{project.get('name', '')}'.",
+    }
+
+
+def get_current_project_context(session_id: str | None = None) -> Dict[str, Any] | None:
+    return _phase22_get_project_context(session_id)
+
+
+def _phase22_create_project_record(*, name: str, root_path: str) -> Dict[str, Any]:
+    now = _utcnow().isoformat()
+    project = {
+        "project_id": f"proj-{uuid.uuid4()}",
+        "name": name,
+        "root_path": root_path,
+        "artifacts": _phase22_scan_artifacts(root_path),
+        "working_set": _phase20_get_working_set(),
+        "state": "active",
+        "finalized_at": None,
+        "archived_at": None,
+        "archive_path": "",
+        "completion_confirmed": False,
+        "metadata": {},
+        "created_at": now,
+        "updated_at": now,
+    }
+    _phase22_projects_by_id[project["project_id"]] = copy.deepcopy(project)
+    _phase23_goals_by_project_id[project["project_id"]] = []
+    _phase23_tasks_by_project_id[project["project_id"]] = []
+    _phase24_milestones_by_project_id[project["project_id"]] = []
+    _phase22_set_project_context(project)
+    return project
+
+
+def _phase22_update_project_timestamp(project_id: str) -> None:
+    project = _phase22_projects_by_id.get(project_id)
+    if not isinstance(project, dict):
+        return
+    project["updated_at"] = _utcnow().isoformat()
+    context = _phase22_get_project_context()
+    if isinstance(context, dict) and str(context.get("project_id", "")) == project_id:
+        _phase22_set_project_context(project)
+
+
+def _phase22_project_for_path(path: str) -> Dict[str, Any] | None:
+    candidate = Path(path).resolve(strict=False)
+    for project in _phase22_projects_by_id.values():
+        if not isinstance(project, dict):
+            continue
+        root = Path(str(project.get("root_path", "")))
+        try:
+            root_resolved = root.resolve(strict=False)
+        except Exception:
+            continue
+        if _phase17_is_within(candidate, root_resolved):
+            return project
+    return None
+
+
+def _phase22_artifact_relpath(project: Dict[str, Any], path: str) -> str:
+    root = Path(str(project.get("root_path", ""))).resolve(strict=False)
+    candidate = Path(path).resolve(strict=False)
+    try:
+        return str(candidate.relative_to(root)).replace("\\", "/")
+    except Exception:
+        return Path(path).name
+
+
+def _phase22_add_or_update_artifact(project: Dict[str, Any], path: str) -> None:
+    rel = _phase22_artifact_relpath(project, path)
+    artifacts = project.get("artifacts", [])
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    now = _utcnow().isoformat()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        if str(artifact.get("path", "")) != rel:
+            continue
+        artifact["type"] = _phase22_artifact_type_from_path(path)
+        artifact["updated_at"] = now
+        project["artifacts"] = artifacts
+        return
+    artifacts.append({"path": rel, "type": _phase22_artifact_type_from_path(path), "updated_at": now})
+    project["artifacts"] = artifacts
+
+
+def _phase22_remove_artifact(project: Dict[str, Any], path: str) -> None:
+    rel = _phase22_artifact_relpath(project, path)
+    artifacts = project.get("artifacts", [])
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    project["artifacts"] = [
+        artifact
+        for artifact in artifacts
+        if not (isinstance(artifact, dict) and str(artifact.get("path", "")) == rel)
+    ]
+
+
+def _phase22_reference_requested(text: str) -> bool:
+    lowered = _normalize(text).lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "this project",
+            "current project",
+            "the project",
+            "the site",
+            "this site",
+            "current site",
+        )
+    )
+
+
+def _phase22_extract_named_project(text: str) -> str:
+    match = re.search(r"\bproject\s+(?:named|called)\s+([a-zA-Z0-9 _.-]+)", text, flags=re.IGNORECASE)
+    if match is None:
+        return ""
+    return _phase22_slug(match.group(1))
+
+
+def _phase22_extract_project_name(text: str) -> str:
+    named = _phase22_extract_named_project(text)
+    if named:
+        return named
+    create_for = re.search(r"\b(?:create|start|build)\s+(?:a\s+)?(?:new\s+)?project\s+(?:for|as)\s+([a-zA-Z0-9 _.-]+)", text, flags=re.IGNORECASE)
+    if create_for is not None:
+        return _phase22_slug(create_for.group(1))
+    create_plain = re.fullmatch(r"(?:create|start|build)\s+(?:a\s+)?(?:new\s+)?project", _normalize(text), flags=re.IGNORECASE)
+    if create_plain is not None:
+        return "project"
+    return ""
+
+
+def _phase22_resolve_project_from_utterance(text: str) -> Dict[str, Any] | None:
+    named = _phase22_extract_named_project(text)
+    if named:
+        matches = [project for project in _phase22_projects_by_id.values() if str(project.get("name", "")) == named]
+        if len(matches) == 1:
+            return copy.deepcopy(matches[0])
+    context = _phase22_get_project_context()
+    if context is None:
+        return None
+    project_id = str(context.get("project_id", ""))
+    project = _phase22_projects_by_id.get(project_id)
+    if not isinstance(project, dict):
+        return None
+    return copy.deepcopy(project)
+
+
+def _phase22_control_response(text: str) -> Dict[str, Any] | None:
+    lowered = _normalize(text).lower().strip(" .!?")
+    if lowered not in {
+        "what project am i working on",
+        "current project",
+        "show files in this project",
+        "show next steps for this project",
+    }:
+        return None
+    diagnostics = get_project_context_diagnostics()
+    if lowered in {"what project am i working on", "current project"}:
+        return {
+            "type": "project_info",
+            "executed": False,
+            "project": diagnostics.get("project"),
+            "message": str(diagnostics.get("message", "")),
+        }
+    project = diagnostics.get("project")
+    if not isinstance(project, dict):
+        return {
+            "type": "no_action",
+            "executed": False,
+            "envelope": _phase17_clarify_envelope(
+                utterance=text,
+                message="No active project. Create or select a project first.",
+            ),
+            "message": "",
+        }
+    artifacts = project.get("artifacts", [])
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    if lowered == "show files in this project":
+        artifact_paths = [str(item.get("path", "")) for item in artifacts if isinstance(item, dict)]
+        message = "\n".join(artifact_paths) if artifact_paths else "No artifacts recorded for this project."
+        return {
+            "type": "project_artifacts",
+            "executed": False,
+            "project": project,
+            "artifacts": artifact_paths,
+            "message": message,
+        }
+    next_steps = []
+    if not artifacts:
+        next_steps.append("Add your first artifact to this project.")
+    else:
+        next_steps.append("Revise existing artifacts or add new pages/files.")
+        next_steps.append("Generate project documentation for overview.")
+    return {
+        "type": "project_next_steps",
+        "executed": False,
+        "project": project,
+        "next_steps": next_steps,
+        "message": " ".join(next_steps),
+    }
+
+
+def _phase23_goals_for_project(project_id: str) -> List[Dict[str, Any]]:
+    key = str(project_id).strip()
+    if not key:
+        return []
+    if key not in _phase23_goals_by_project_id:
+        _phase23_goals_by_project_id[key] = []
+    return _phase23_goals_by_project_id[key]
+
+
+def _phase23_tasks_for_project(project_id: str) -> List[Dict[str, Any]]:
+    key = str(project_id).strip()
+    if not key:
+        return []
+    if key not in _phase23_tasks_by_project_id:
+        _phase23_tasks_by_project_id[key] = []
+    return _phase23_tasks_by_project_id[key]
+
+
+def _phase23_goal_to_dict(goal: ProjectGoal) -> Dict[str, Any]:
+    return {
+        "goal_id": goal.goal_id,
+        "project_id": goal.project_id,
+        "description": goal.description,
+        "created_at": goal.created_at,
+        "metadata": copy.deepcopy(goal.metadata),
+    }
+
+
+def _phase23_task_to_dict(task: ProjectTask) -> Dict[str, Any]:
+    return {
+        "task_id": task.task_id,
+        "project_id": task.project_id,
+        "goal_id": task.goal_id,
+        "description": task.description,
+        "status": task.status,
+        "dependencies": list(task.dependencies),
+        "created_at": task.created_at,
+        "completed_at": task.completed_at,
+        "metadata": copy.deepcopy(task.metadata),
+    }
+
+
+def _phase23_goal_by_id(project_id: str, goal_id: str) -> Dict[str, Any] | None:
+    key = str(goal_id).strip()
+    if not key:
+        return None
+    for goal in _phase23_goals_for_project(project_id):
+        if not isinstance(goal, dict):
+            continue
+        if str(goal.get("goal_id", "")) == key:
+            return goal
+    return None
+
+
+def _phase23_task_by_id(project_id: str, task_id: str) -> Dict[str, Any] | None:
+    key = str(task_id).strip()
+    if not key:
+        return None
+    for task in _phase23_tasks_for_project(project_id):
+        if not isinstance(task, dict):
+            continue
+        if str(task.get("task_id", "")) == key:
+            return task
+    return None
+
+
+def _phase23_resolve_goal(project_id: str, goal_ref: str | None) -> tuple[Dict[str, Any] | None, str | None]:
+    goals = [goal for goal in _phase23_goals_for_project(project_id) if isinstance(goal, dict)]
+    if not goals:
+        return None, "No goals defined for this project."
+    ref = str(goal_ref or "").strip()
+    if ref:
+        goal = _phase23_goal_by_id(project_id, ref)
+        if goal is not None:
+            return goal, None
+        ref_lower = _normalize(ref).lower()
+        matching = [
+            goal
+            for goal in goals
+            if ref_lower and ref_lower in _normalize(str(goal.get("description", ""))).lower()
+        ]
+        if len(matching) == 1:
+            return matching[0], None
+        if len(matching) > 1:
+            return None, f"Goal reference '{ref}' is ambiguous. Use goal_id."
+        return None, f"Goal '{ref}' was not found."
+    if len(goals) == 1:
+        return goals[0], None
+    return None, "Multiple goals exist. Specify a goal_id."
+
+
+def _phase23_resolve_task(project_id: str, task_ref: str) -> tuple[Dict[str, Any] | None, str | None]:
+    ref = str(task_ref).strip()
+    task = _phase23_task_by_id(project_id, ref)
+    if task is not None:
+        return task, None
+    ref_lower = _normalize(ref).lower()
+    tasks = [task for task in _phase23_tasks_for_project(project_id) if isinstance(task, dict)]
+    matching = [
+        task
+        for task in tasks
+        if ref_lower and ref_lower in _normalize(str(task.get("description", ""))).lower()
+    ]
+    if len(matching) == 1:
+        return matching[0], None
+    if len(matching) > 1:
+        return None, f"Task reference '{task_ref}' is ambiguous. Use task_id."
+    return None, f"Task '{task_ref}' was not found."
+
+
+def _phase23_task_requires_approval(task: Dict[str, Any]) -> bool:
+    metadata = task.get("metadata", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if bool(metadata.get("requires_approval", False)):
+        return True
+    if bool(metadata.get("involves_write", False)):
+        return True
+    return False
+
+
+def _phase23_refresh_blocked_statuses(project_id: str) -> None:
+    tasks = _phase23_tasks_for_project(project_id)
+    task_index = {
+        str(task.get("task_id", "")): task
+        for task in tasks
+        if isinstance(task, dict) and str(task.get("task_id", ""))
+    }
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        if str(task.get("status", "")) == "COMPLETED":
+            continue
+        dependencies = task.get("dependencies", [])
+        dependencies = dependencies if isinstance(dependencies, list) else []
+        blocked = False
+        for dependency in dependencies:
+            dep = task_index.get(str(dependency))
+            if not isinstance(dep, dict):
+                blocked = True
+                break
+            if str(dep.get("status", "")) != "COMPLETED":
+                blocked = True
+                break
+        task["status"] = "BLOCKED" if blocked else "PENDING"
+
+
+def _phase23_order_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(tasks, key=lambda item: str(item.get("created_at", "")))
+
+
+def _phase23_task_write_hint(description: str) -> bool:
+    lowered = _normalize(description).lower()
+    return any(
+        re.search(rf"\b{re.escape(token)}\b", lowered)
+        for token in ("write", "update", "modify", "refactor", "create", "replace", "add", "convert")
+    )
+
+
+def _phase23_llm_task_descriptions(project_state: Dict[str, Any], goal_description: str) -> List[str]:
+    model_config = _load_model_config()
+    if llm_api is None or not model_config:
+        return []
+    artifacts = project_state.get("artifacts", [])
+    artifact_paths = [str(item.get("path", "")) for item in artifacts if isinstance(item, dict)]
+    prompt_payload = {
+        "task": "Propose 3-6 actionable project tasks as plain text lines.",
+        "goal": goal_description,
+        "project_name": str(project_state.get("name", "")),
+        "artifact_paths": artifact_paths[:100],
+        "constraints": {
+            "max_tasks": 6,
+            "return_json": True,
+            "output_schema": {"tasks": ["string"]},
+        },
+    }
+    messages = [
+        {"role": "system", "content": "Return JSON only with key 'tasks' as an array of short strings."},
+        {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=True)},
+    ]
+    try:
+        raw = llm_api.get_completion(messages, model_config)
+    except Exception:
+        return []
+    if not isinstance(raw, str):
+        return []
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return []
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        return []
+    cleaned = []
+    for item in tasks:
+        text = _normalize(str(item))
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
+def _decompose_goal_to_tasks(project_state: Dict[str, Any], goal_description: str) -> List[ProjectTask]:
+    project_id = str(project_state.get("project_id", ""))
+    artifacts = project_state.get("artifacts", [])
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    artifact_paths = [str(item.get("path", "")) for item in artifacts if isinstance(item, dict)]
+    now = _utcnow().isoformat()
+
+    descriptions = _phase23_llm_task_descriptions(project_state, goal_description)
+    if not descriptions:
+        descriptions = []
+        if not artifact_paths:
+            descriptions.append(f"Create initial project artifacts to support goal: {goal_description}.")
+        else:
+            if any(path.lower().endswith((".html", ".htm")) for path in artifact_paths):
+                descriptions.append("Align HTML pages with the project goal.")
+            if any(path.lower().endswith(".css") for path in artifact_paths):
+                descriptions.append("Apply stylesheet updates needed for the goal.")
+            descriptions.append("Review current artifacts and update content for goal alignment.")
+        descriptions.append("Verify cross-artifact consistency and links.")
+        descriptions.append("Prepare final readiness checklist for goal completion.")
+
+    tasks: List[ProjectTask] = []
+    previous_task_id = ""
+    for index, description in enumerate(descriptions, start=1):
+        text = _normalize(description)
+        if not text:
+            continue
+        dependencies = [previous_task_id] if previous_task_id else []
+        status = "BLOCKED" if dependencies else "PENDING"
+        task = ProjectTask(
+            task_id=f"task-{uuid.uuid4()}",
+            project_id=project_id,
+            goal_id="",
+            description=text,
+            status=status,
+            dependencies=dependencies,
+            created_at=now,
+            completed_at=None,
+            metadata={
+                "advisory": True,
+                "order_index": index,
+                "involves_write": _phase23_task_write_hint(text),
+            },
+        )
+        tasks.append(task)
+        previous_task_id = task.task_id
+    return tasks
+
+
+def handle_define_project_goal(project: Dict[str, Any], goal_description: str) -> Dict[str, Any]:
+    project_id = str(project.get("project_id", ""))
+    description = _normalize(goal_description)
+    goal = ProjectGoal(
+        goal_id=f"goal-{uuid.uuid4()}",
+        project_id=project_id,
+        description=description,
+        created_at=_utcnow().isoformat(),
+        metadata={},
+    )
+    _phase23_goals_for_project(project_id).append(_phase23_goal_to_dict(goal))
+    _phase22_update_project_timestamp(project_id)
+    return {
+        "type": "project_goal_defined",
+        "executed": False,
+        "project": copy.deepcopy(project),
+        "goal": _phase23_goal_to_dict(goal),
+        "message": f"Defined goal {goal.goal_id} for project '{project.get('name', '')}': {description}",
+    }
+
+
+def handle_list_project_goals(project: Dict[str, Any]) -> Dict[str, Any]:
+    project_id = str(project.get("project_id", ""))
+    goals = [copy.deepcopy(goal) for goal in _phase23_goals_for_project(project_id) if isinstance(goal, dict)]
+    return {
+        "type": "project_goals",
+        "executed": False,
+        "project": copy.deepcopy(project),
+        "goals": goals,
+        "message": "\n".join([f"{goal['goal_id']}: {goal['description']}" for goal in goals]) if goals else "No goals defined for this project.",
+    }
+
+
+def handle_describe_project_goal(project: Dict[str, Any], goal: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "project_goal",
+        "executed": False,
+        "project": copy.deepcopy(project),
+        "goal": copy.deepcopy(goal),
+        "message": f"{goal.get('goal_id', '')}: {goal.get('description', '')}",
+    }
+
+
+def handle_list_project_tasks(project: Dict[str, Any], goal_id: str | None = None) -> Dict[str, Any]:
+    project_id = str(project.get("project_id", ""))
+    _phase23_refresh_blocked_statuses(project_id)
+    tasks = [task for task in _phase23_tasks_for_project(project_id) if isinstance(task, dict)]
+    if goal_id:
+        tasks = [task for task in tasks if str(task.get("goal_id", "")) == str(goal_id)]
+    ordered = _phase23_order_tasks(tasks)
+    return {
+        "type": "project_tasks",
+        "executed": False,
+        "project": copy.deepcopy(project),
+        "tasks": copy.deepcopy(ordered),
+        "message": "\n".join([f"{task['task_id']} [{task['status']}]: {task['description']}" for task in ordered]) if ordered else "No tasks recorded for this project.",
+    }
+
+
+def handle_task_status(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "task_status",
+        "executed": False,
+        "project": copy.deepcopy(project),
+        "task": copy.deepcopy(task),
+        "message": f"{task.get('task_id', '')} is {task.get('status', '')}.",
+    }
+
+
+def handle_propose_next_tasks(project: Dict[str, Any], goal: Dict[str, Any]) -> Dict[str, Any]:
+    project_id = str(project.get("project_id", ""))
+    goal_id = str(goal.get("goal_id", ""))
+    existing = [task for task in _phase23_tasks_for_project(project_id) if isinstance(task, dict)]
+    existing_for_goal = {
+        _normalize(str(task.get("description", ""))).lower(): task
+        for task in existing
+        if str(task.get("goal_id", "")) == goal_id
+    }
+    candidate_tasks = _decompose_goal_to_tasks(project, str(goal.get("description", "")))
+    merged: List[Dict[str, Any]] = []
+    for candidate in candidate_tasks:
+        description_key = _normalize(candidate.description).lower()
+        if description_key in existing_for_goal:
+            merged.append(existing_for_goal[description_key])
+            continue
+        task_dict = _phase23_task_to_dict(
+            ProjectTask(
+                task_id=candidate.task_id,
+                project_id=project_id,
+                goal_id=goal_id,
+                description=candidate.description,
+                status=candidate.status,
+                dependencies=candidate.dependencies,
+                created_at=candidate.created_at,
+                completed_at=candidate.completed_at,
+                metadata=candidate.metadata,
+            )
+        )
+        _phase23_tasks_for_project(project_id).append(task_dict)
+        merged.append(task_dict)
+    _phase23_refresh_blocked_statuses(project_id)
+    ordered = _phase23_order_tasks([task for task in _phase23_tasks_for_project(project_id) if str(task.get("goal_id", "")) == goal_id])
+    return {
+        "type": "project_tasks_proposed",
+        "executed": False,
+        "capture_eligible": True,
+        "project": copy.deepcopy(project),
+        "goal": copy.deepcopy(goal),
+        "tasks": copy.deepcopy(ordered),
+        "message": "\n".join([f"{task['task_id']} [{task['status']}]: {task['description']}" for task in ordered]),
+    }
+
+
+def handle_complete_task(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+    task["status"] = "COMPLETED"
+    task["completed_at"] = _utcnow().isoformat()
+    project_id = str(project.get("project_id", ""))
+    _phase23_refresh_blocked_statuses(project_id)
+    _phase22_update_project_timestamp(project_id)
+    return {
+        "type": "task_completed",
+        "executed": False,
+        "project": copy.deepcopy(project),
+        "task": copy.deepcopy(task),
+        "message": f"Task {task.get('task_id', '')} marked as COMPLETED.",
+    }
+
+
+def _phase24_milestones_for_project(project_id: str) -> List[Dict[str, Any]]:
+    key = str(project_id).strip()
+    if not key:
+        return []
+    if key not in _phase24_milestones_by_project_id:
+        _phase24_milestones_by_project_id[key] = []
+    return _phase24_milestones_by_project_id[key]
+
+
+def _phase24_milestone_to_dict(milestone: ProjectMilestone) -> Dict[str, Any]:
+    return {
+        "milestone_id": milestone.milestone_id,
+        "project_id": milestone.project_id,
+        "title": milestone.title,
+        "description": milestone.description,
+        "associated_goals": list(milestone.associated_goals),
+        "criteria": list(milestone.criteria),
+        "status": milestone.status,
+        "created_at": milestone.created_at,
+        "achieved_at": milestone.achieved_at,
+    }
+
+
+def _phase24_milestone_by_id(project_id: str, milestone_id: str) -> Dict[str, Any] | None:
+    key = str(milestone_id).strip()
+    if not key:
+        return None
+    for milestone in _phase24_milestones_for_project(project_id):
+        if not isinstance(milestone, dict):
+            continue
+        if str(milestone.get("milestone_id", "")) == key:
+            return milestone
+    return None
+
+
+def _phase24_resolve_milestone(project_id: str, reference: str | None) -> tuple[Dict[str, Any] | None, str | None]:
+    milestones = [item for item in _phase24_milestones_for_project(project_id) if isinstance(item, dict)]
+    if not milestones:
+        return None, "No milestones are defined for this project."
+    ref = _normalize(str(reference or ""))
+    if not ref:
+        if len(milestones) == 1:
+            return milestones[0], None
+        return None, "Multiple milestones exist. Specify a milestone_id or title."
+    direct = _phase24_milestone_by_id(project_id, ref)
+    if direct is not None:
+        return direct, None
+    lowered = ref.lower()
+    matching = [
+        milestone
+        for milestone in milestones
+        if lowered in _normalize(str(milestone.get("title", ""))).lower()
+        or lowered in _normalize(str(milestone.get("description", ""))).lower()
+    ]
+    if len(matching) == 1:
+        return matching[0], None
+    if len(matching) > 1:
+        return None, f"Milestone reference '{ref}' is ambiguous. Use milestone_id."
+    return None, f"Milestone '{ref}' was not found."
+
+
+def _phase24_goal_is_complete(project_id: str, goal_id: str) -> bool:
+    goal = _phase23_goal_by_id(project_id, goal_id)
+    if goal is None:
+        return False
+    _phase23_refresh_blocked_statuses(project_id)
+    tasks = [
+        task
+        for task in _phase23_tasks_for_project(project_id)
+        if isinstance(task, dict) and str(task.get("goal_id", "")) == str(goal_id)
+    ]
+    if not tasks:
+        return False
+    return all(str(task.get("status", "")) == "COMPLETED" for task in tasks)
+
+
+def _phase24_unfinished_tasks_for_goals(project_id: str, goal_ids: List[str]) -> List[Dict[str, Any]]:
+    _phase23_refresh_blocked_statuses(project_id)
+    goals = [str(goal_id).strip() for goal_id in goal_ids if str(goal_id).strip()]
+    tasks = [task for task in _phase23_tasks_for_project(project_id) if isinstance(task, dict)]
+    if goals:
+        tasks = [task for task in tasks if str(task.get("goal_id", "")) in goals]
+    return [task for task in tasks if str(task.get("status", "")) in {"PENDING", "BLOCKED"}]
+
+
+def _phase24_milestone_compliance(project_id: str, milestone: Dict[str, Any]) -> tuple[bool, List[str]]:
+    reasons: List[str] = []
+    associated_goals = milestone.get("associated_goals", [])
+    associated_goals = associated_goals if isinstance(associated_goals, list) else []
+    associated_goal_ids = [str(goal_id).strip() for goal_id in associated_goals if str(goal_id).strip()]
+    for goal_id in associated_goal_ids:
+        if _phase23_goal_by_id(project_id, goal_id) is None:
+            reasons.append(f"Associated goal '{goal_id}' does not exist.")
+        elif not _phase24_goal_is_complete(project_id, goal_id):
+            reasons.append(f"Associated goal '{goal_id}' is not complete.")
+    criteria = milestone.get("criteria", [])
+    criteria = criteria if isinstance(criteria, list) else []
+    unfinished = _phase24_unfinished_tasks_for_goals(project_id, associated_goal_ids)
+    for criterion in criteria:
+        text = _normalize(str(criterion)).lower()
+        if not text:
+            continue
+        if "all associated goals" in text and associated_goal_ids:
+            if any(not _phase24_goal_is_complete(project_id, goal_id) for goal_id in associated_goal_ids):
+                reasons.append("Criterion 'all associated goals' is not satisfied.")
+        if "no pending tasks" in text:
+            if unfinished:
+                reasons.append("Criterion 'no pending tasks' is not satisfied.")
+    return not reasons, reasons
+
+
+def _phase24_project_completion_snapshot(project: Dict[str, Any], *, explicit_confirmation: bool) -> Dict[str, Any]:
+    project_id = str(project.get("project_id", ""))
+    milestones = [item for item in _phase24_milestones_for_project(project_id) if isinstance(item, dict)]
+    achieved = [item for item in milestones if str(item.get("status", "")) == "ACHIEVED"]
+    milestone_goal_ids: List[str] = []
+    for milestone in milestones:
+        goal_ids = milestone.get("associated_goals", [])
+        goal_ids = goal_ids if isinstance(goal_ids, list) else []
+        for goal_id in goal_ids:
+            normalized = str(goal_id).strip()
+            if normalized and normalized not in milestone_goal_ids:
+                milestone_goal_ids.append(normalized)
+    unfinished_tasks = _phase24_unfinished_tasks_for_goals(project_id, milestone_goal_ids)
+    persisted_confirmation = bool(project.get("completion_confirmed", False))
+    confirmed = persisted_confirmation or bool(explicit_confirmation)
+    all_milestones_achieved = bool(milestones) and len(achieved) == len(milestones)
+    no_pending = not unfinished_tasks
+    complete = all_milestones_achieved and no_pending and confirmed
+    next_steps: List[str] = []
+    if not milestones:
+        next_steps.append("Define at least one milestone.")
+    elif not all_milestones_achieved:
+        next_steps.append("Achieve all project milestones.")
+    if unfinished_tasks:
+        next_steps.append("Complete remaining pending/blocked tasks.")
+    if not confirmed:
+        next_steps.append("Provide explicit completion confirmation (for example: finalize project).")
+    return {
+        "is_complete": complete,
+        "all_milestones_achieved": all_milestones_achieved,
+        "no_pending_tasks": no_pending,
+        "confirmation_received": confirmed,
+        "milestone_count": len(milestones),
+        "milestones_achieved": len(achieved),
+        "unfinished_task_count": len(unfinished_tasks),
+        "unfinished_tasks": copy.deepcopy(unfinished_tasks),
+        "next_steps": next_steps,
+    }
+
+
+def _phase24_project_summary_text(project: Dict[str, Any]) -> str:
+    project_id = str(project.get("project_id", ""))
+    name = str(project.get("name", "project"))
+    root = str(project.get("root_path", ""))
+    artifacts = project.get("artifacts", [])
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    goals = [goal for goal in _phase23_goals_for_project(project_id) if isinstance(goal, dict)]
+    milestones = [item for item in _phase24_milestones_for_project(project_id) if isinstance(item, dict)]
+    lines = [f"# Project Summary: {name}", f"Root: {root}", ""]
+    lines.append("## Artifacts")
+    if artifacts:
+        lines.extend([f"- {item.get('path', '')}" for item in artifacts if isinstance(item, dict)])
+    else:
+        lines.append("- (none)")
+    lines.append("")
+    lines.append("## Goals")
+    if goals:
+        lines.extend([f"- {goal.get('goal_id', '')}: {goal.get('description', '')}" for goal in goals])
+    else:
+        lines.append("- (none)")
+    lines.append("")
+    lines.append("## Milestones")
+    if milestones:
+        lines.extend(
+            [
+                f"- {item.get('milestone_id', '')} [{item.get('status', '')}]: {item.get('title', '')}"
+                for item in milestones
+            ]
+        )
+    else:
+        lines.append("- (none)")
+    return "\n".join(lines)
+
+
+def _phase24_archive_root(project: Dict[str, Any]) -> str:
+    project_name = _phase22_slug(str(project.get("name", "project")))
+    timestamp = _utcnow().strftime("%Y%m%d%H%M%S")
+    return str((Path.home() / "sandbox" / "archives" / f"{project_name}_{timestamp}").resolve())
+
+
+def _phase24_project_state(project: Dict[str, Any]) -> str:
+    return _normalize(str(project.get("state", "active"))).lower() or "active"
+
+
+def _phase24_project_is_writable(project: Dict[str, Any]) -> bool:
+    return _phase24_project_state(project) == "active"
+
+
+def _phase24_project_for_envelope(envelope: Envelope) -> Dict[str, Any] | None:
+    explicit_project_id = _entity_string(envelope, "phase22_project_id") or _entity_string(envelope, "project_id")
+    if explicit_project_id:
+        project = _phase22_projects_by_id.get(explicit_project_id)
+        if isinstance(project, dict):
+            return project
+    path = _entity_string(envelope, "path")
+    if not path:
+        return None
+    return _phase22_project_for_path(path)
+
+
+def _phase24_apply_write_guard(
+    *,
+    envelope: Envelope,
+    normalized_utterance: str,
+) -> tuple[Dict[str, Any] | None, Envelope]:
+    if not _phase24_enabled:
+        return None, envelope
+    intent = str(envelope.get("intent", "")).strip()
+    if intent not in _FILESYSTEM_WRITE_INTENTS:
+        return None, envelope
+    project = _phase24_project_for_envelope(envelope)
+    if not isinstance(project, dict):
+        return None, envelope
+    state = _phase24_project_state(project)
+    if state == "active":
+        return None, envelope
+    return _phase19_clarify_response(
+        utterance=normalized_utterance,
+        message=(
+            f"Project '{project.get('name', '')}' is {state} and read-only. "
+            "Reactivate or clone the project before writing."
+        ),
+    )
+
+
+def handle_define_milestone(
+    project: Dict[str, Any],
+    *,
+    title: str,
+    description: str,
+    associated_goals: List[str],
+    criteria: List[str],
+) -> Dict[str, Any]:
+    project_id = str(project.get("project_id", ""))
+    milestone = ProjectMilestone(
+        milestone_id=f"ms-{uuid.uuid4()}",
+        project_id=project_id,
+        title=_normalize(title),
+        description=_normalize(description),
+        associated_goals=[str(goal_id).strip() for goal_id in associated_goals if str(goal_id).strip()],
+        criteria=[_normalize(criterion) for criterion in criteria if _normalize(criterion)],
+        status="PENDING",
+        created_at=_utcnow().isoformat(),
+        achieved_at=None,
+    )
+    _phase24_milestones_for_project(project_id).append(_phase24_milestone_to_dict(milestone))
+    _phase22_update_project_timestamp(project_id)
+    payload = _phase24_milestone_to_dict(milestone)
+    return {
+        "type": "project_milestone_defined",
+        "executed": False,
+        "project": copy.deepcopy(project),
+        "milestone": payload,
+        "message": f"Defined milestone {payload['milestone_id']}: {payload['title']}",
+    }
+
+
+def handle_list_milestones(project: Dict[str, Any]) -> Dict[str, Any]:
+    project_id = str(project.get("project_id", ""))
+    milestones = [copy.deepcopy(item) for item in _phase24_milestones_for_project(project_id) if isinstance(item, dict)]
+    return {
+        "type": "project_milestones",
+        "executed": False,
+        "project": copy.deepcopy(project),
+        "milestones": milestones,
+        "message": "\n".join(
+            [f"{item.get('milestone_id', '')} [{item.get('status', '')}]: {item.get('title', '')}" for item in milestones]
+        ) if milestones else "No milestones are defined for this project.",
+    }
+
+
+def handle_describe_milestone(project: Dict[str, Any], milestone: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "project_milestone",
+        "executed": False,
+        "project": copy.deepcopy(project),
+        "milestone": copy.deepcopy(milestone),
+        "message": (
+            f"{milestone.get('milestone_id', '')} [{milestone.get('status', '')}]: "
+            f"{milestone.get('title', '')}"
+        ),
+    }
+
+
+def handle_achieve_milestone(project: Dict[str, Any], milestone: Dict[str, Any]) -> Dict[str, Any]:
+    milestone["status"] = "ACHIEVED"
+    milestone["achieved_at"] = _utcnow().isoformat()
+    project_id = str(project.get("project_id", ""))
+    _phase22_update_project_timestamp(project_id)
+    return {
+        "type": "project_milestone_achieved",
+        "executed": False,
+        "project": copy.deepcopy(project),
+        "milestone": copy.deepcopy(milestone),
+        "message": (
+            f"Milestone {milestone.get('milestone_id', '')} "
+            f"marked as ACHIEVED."
+        ),
+    }
+
+
+def handle_project_completion_status(project: Dict[str, Any], *, explicit_confirmation: bool) -> Dict[str, Any]:
+    snapshot = _phase24_project_completion_snapshot(project, explicit_confirmation=explicit_confirmation)
+    return {
+        "type": "project_completion_status",
+        "executed": False,
+        "project": copy.deepcopy(project),
+        "completion": snapshot,
+        "message": (
+            "Project is complete."
+            if snapshot["is_complete"]
+            else "Project is not complete. " + " ".join(snapshot.get("next_steps", []))
+        ),
+    }
+
+
 def _is_deprecated_engineer_mode_input(text: str) -> bool:
     lowered = _normalize(text).lower()
     return (
@@ -382,6 +1844,14 @@ def _phase9_normalize_utterance(text: str) -> str:
     filesystem_override = _phase17_filesystem_override_for_legacy_engineer_input(normalized)
     if filesystem_override is not None:
         return filesystem_override
+    if _parse_phase24_intent(normalized) is not None:
+        return normalized
+    if _parse_phase23_intent(normalized) is not None:
+        return normalized
+    if _parse_phase22_intent(normalized) is not None:
+        return normalized
+    if _parse_persist_note_intent(normalized) is not None:
+        return normalized
     lowered = normalized.lower()
     if _parse_filesystem_intent(normalized) is not None:
         return normalized
@@ -516,6 +1986,13 @@ def _phase17_allowed_roots() -> List[Path]:
     return deduped
 
 
+def _phase17_is_within(path: Path, root: Path) -> bool:
+    try:
+        return path.is_relative_to(root)
+    except Exception:
+        return False
+
+
 def _phase17_normalize_path(raw_path: str, *, location_hint: str) -> tuple[str | None, str | None]:
     path_text = _strip_wrapping_quotes(raw_path)
     if not path_text:
@@ -527,7 +2004,7 @@ def _phase17_normalize_path(raw_path: str, *, location_hint: str) -> tuple[str |
         candidate = (base / candidate)
     normalized = candidate.resolve(strict=False)
 
-    allowed = any(normalized.is_relative_to(root) for root in _phase17_allowed_roots())
+    allowed = any(_phase17_is_within(normalized, root) for root in _phase17_allowed_roots())
     if not allowed:
         return None, f"Path outside allowed scope: {normalized}"
     return str(normalized), None
@@ -568,6 +2045,976 @@ def _phase17_clarify_envelope(*, utterance: str, message: str) -> Envelope:
         allowed=True,
         reason="Filesystem request is missing required parameters.",
         next_prompt=message,
+    )
+
+
+def _phase19_notes_root() -> Path:
+    return (Path.home() / Path(*_PHASE19_NOTES_SUBDIR)).resolve()
+
+
+def _phase19_default_filename() -> str:
+    return f"note-{_utcnow().strftime('%Y%m%d-%H%M')}.txt"
+
+
+def _phase19_normalize_filename(raw: str) -> str | None:
+    candidate = _strip_wrapping_quotes(raw).strip()
+    if not candidate:
+        return None
+    if "/" in candidate or "\\" in candidate or ".." in candidate:
+        return None
+    candidate = re.sub(r"\s+", "-", candidate)
+    if not _PHASE19_FILENAME_PATTERN.fullmatch(candidate):
+        return None
+    if "." not in candidate:
+        candidate = f"{candidate}.txt"
+    return candidate
+
+
+def _phase19_extract_filename(normalized: str) -> str:
+    named_match = re.search(
+        r"(?:file|note)\s+(?:named|called)\s+(?P<filename>[A-Za-z0-9._-]+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if named_match is not None:
+        return str(named_match.group("filename"))
+
+    as_match = re.search(r"\bas\s+(?P<filename>[A-Za-z0-9._-]+\.txt)\s*$", normalized, flags=re.IGNORECASE)
+    if as_match is not None:
+        return str(as_match.group("filename"))
+    return ""
+
+
+def _phase19_extract_inline_content(normalized: str) -> str:
+    quoted = re.search(r'"(?P<content>[^"]+)"', normalized)
+    if quoted is not None:
+        return _strip_wrapping_quotes(quoted.group("content"))
+
+    create_with = re.search(r"\bcreate (?:a )?note with (?P<content>.+)$", normalized, flags=re.IGNORECASE)
+    if create_with is not None:
+        return _strip_wrapping_quotes(create_with.group("content"))
+
+    suffix = re.search(
+        r"(?:idea|thought|text|snippet)\s*[:\-]\s*(?P<content>.+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if suffix is not None:
+        return _strip_wrapping_quotes(suffix.group("content"))
+    return ""
+
+
+def _phase19_generation_hint(normalized: str) -> bool:
+    lowered = normalized.lower()
+    if re.search(r"\b(?:this|an|a)\s+(?:idea|thought)\b", lowered):
+        return True
+    if lowered.startswith("create a note") and "with " not in lowered:
+        return True
+    return False
+
+
+def _phase19_last_response_reference(normalized: str) -> bool:
+    lowered = normalized.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "above text",
+            "last response",
+            "this text",
+            "this snippet",
+        )
+    )
+
+
+def _phase19_working_set_reference(normalized: str) -> bool:
+    lowered = normalized.lower().strip(" .!?")
+    simple = re.fullmatch(
+        r"(?:please\s+)?(?:save|store|put)\s+"
+        r"(?:this|that|it|(?:the\s+)?current(?:\s+(?:note|page|file|draft|concept|text|snippet|thought|idea|working_set))?)"
+        r"(?:\s+as\s+(?:a\s+)?note)?(?:\s+please)?",
+        lowered,
+    )
+    return simple is not None
+
+
+def _phase19_clarify_response(*, utterance: str, message: str) -> tuple[Dict[str, Any], Envelope]:
+    envelope = _phase17_clarify_envelope(utterance=utterance, message=message)
+    return {
+        "type": "no_action",
+        "executed": False,
+        "envelope": envelope,
+        "message": "",
+    }, envelope
+
+
+def _phase19_generate_note_content(utterance: str) -> str:
+    model_config = _load_model_config()
+    if llm_api is not None and model_config:
+        prompt_payload = {
+            "task": "Generate a minimal note to persist.",
+            "utterance": utterance,
+            "constraints": {
+                "max_lines": 3,
+                "max_chars": 240,
+                "return_text_only": True,
+            },
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": "Generate plain text only. No markdown, no code fences.",
+            },
+            {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=True)},
+        ]
+        try:
+            raw = llm_api.get_completion(messages, model_config)
+            if isinstance(raw, str):
+                text = raw.strip()
+                if text:
+                    return text
+        except Exception:
+            pass
+    return "Note saved."
+
+
+def _phase21_extract_write_target(normalized: str) -> tuple[str, str]:
+    target = ""
+    location_hint = "workspace"
+    explicit = re.search(
+        r"(?:to|into)\s+file(?:\s+(?:named|called))?\s+(?P<path>[A-Za-z0-9._/\-]+)"
+        r"(?:\s+in\s+(?P<loc>my home directory|home directory|my workspace|workspace|sandbox))?",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if explicit is not None:
+        target = _strip_wrapping_quotes(str(explicit.group("path")))
+        location_hint = _phase17_location_hint(explicit.group("loc"))
+        return target, location_hint
+
+    named = re.search(
+        r"\b(?:file|module)\s+(?:named|called)\s+(?P<path>[A-Za-z0-9._/\-]+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if named is not None:
+        target = _strip_wrapping_quotes(str(named.group("path")))
+    return target, location_hint
+
+
+def _phase21_detect_intent(normalized: str) -> str | None:
+    lowered = normalized.lower()
+    if any(re.search(rf"\b{re.escape(term)}\b", lowered) for term in ("run", "execute", "delete", "remove")):
+        return None
+
+    if re.search(r"\brefactor\b", lowered) and re.search(r"\b(file|module)\b", lowered):
+        return "refactor_file"
+    if "split this file" in lowered or "function names" in lowered:
+        return "refactor_file"
+
+    transform_patterns = (
+        r"\btransform\b",
+        r"\bconvert\b",
+        r"\bformat\b",
+        r"\buppercase\b",
+        r"\blowercase\b",
+        r"\bwrap this\b",
+        r"\brefactor this snippet\b",
+        r"\bextract this into\b",
+    )
+    if any(re.search(pattern, lowered) for pattern in transform_patterns):
+        return "transform_content"
+
+    revise_patterns = (
+        r"\brevise\b",
+        r"\bupdate\b",
+        r"\bchange\b",
+        r"\bmake this\b",
+        r"\badd a section\b",
+        r"\bmake .* more concise\b",
+    )
+    if any(re.search(pattern, lowered) for pattern in revise_patterns):
+        return "revise_content"
+
+    return None
+
+
+def _phase21_request_requires_write(intent: str, normalized: str) -> bool:
+    lowered = normalized.lower()
+    if intent == "refactor_file":
+        return True
+    explicit_write_phrases = (
+        "to file",
+        "into file",
+        "write back",
+        "save back",
+        "overwrite",
+        "rewrite file",
+        "replace file",
+    )
+    if any(phrase in lowered for phrase in explicit_write_phrases):
+        return True
+    if re.search(r"\b(?:this|that|current)\s+(?:file|page)\b", lowered):
+        return True
+    return False
+
+
+def _phase21_is_ambiguous_request(normalized: str, intent: str) -> bool:
+    lowered = normalized.lower().strip(" .!?")
+    base = r"(?:this|that|it|(?:the\s+)?current(?:\s+(?:note|page|file|draft|concept|text|snippet|thought|idea|working_set))?)"
+    if intent == "revise_content":
+        return bool(re.fullmatch(rf"(?:please\s+)?(?:revise|update|change|make)\s+{base}(?:\s+please)?", lowered))
+    if intent == "transform_content":
+        return bool(re.fullmatch(rf"(?:please\s+)?(?:transform|convert|format)\s+{base}(?:\s+please)?", lowered))
+    if intent == "refactor_file":
+        return bool(re.fullmatch(rf"(?:please\s+)?refactor\s+{base}(?:\s+please)?", lowered))
+    return False
+
+
+def _phase21_extract_instruction(normalized: str, intent: str) -> str:
+    lowered = normalized.lower()
+    if intent == "transform_content":
+        if "uppercase" in lowered:
+            return "convert to uppercase"
+        if "lowercase" in lowered:
+            return "convert to lowercase"
+        markdown = re.search(r"\bformat .+ as markdown\b", lowered)
+        if markdown is not None:
+            return "format as markdown"
+        wrap_match = re.search(r"\bwrap .+ in a div with class ([a-zA-Z0-9_-]+)\b", normalized, flags=re.IGNORECASE)
+        if wrap_match is not None:
+            return f"wrap in div class {wrap_match.group(1)}"
+    target_match = re.search(r"\b(?:to|with|into)\s+(.+)$", normalized, flags=re.IGNORECASE)
+    if target_match is not None:
+        return _normalize(target_match.group(1))
+    return normalized
+
+
+def _phase21_read_content_from_path(path: str) -> str:
+    candidate = _normalize(path)
+    if not candidate:
+        return ""
+    try:
+        file_path = Path(candidate).resolve()
+    except Exception:
+        return ""
+    if not file_path.exists() or not file_path.is_file():
+        return ""
+    try:
+        roots = _phase17_allowed_roots()
+        if not any(_phase17_is_within(file_path, root) for root in roots):
+            return ""
+    except Exception:
+        return ""
+    try:
+        return file_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def _phase21_generate_transformed_content(
+    *,
+    original_content: str,
+    request: str,
+    content_type: str,
+    intent: str,
+) -> str:
+    lowered = request.lower()
+    if "uppercase" in lowered:
+        return original_content.upper()
+    if "lowercase" in lowered:
+        return original_content.lower()
+    if "format as markdown" in lowered:
+        return f"```markdown\n{original_content}\n```"
+    div_match = re.search(r"\bdiv class ([a-zA-Z0-9_-]+)\b", request, flags=re.IGNORECASE)
+    if div_match is not None:
+        klass = div_match.group(1)
+        return f'<div class="{klass}">\n{original_content}\n</div>'
+
+    model_config = _load_model_config()
+    if llm_api is not None and model_config:
+        prompt_payload = {
+            "task": "Revise or transform content exactly as requested.",
+            "intent": intent,
+            "content_type": content_type,
+            "request": request,
+            "original_content": original_content,
+            "constraints": {
+                "preserve_intent": True,
+                "return_text_only": True,
+                "no_explanations": True,
+            },
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": "You revise text, markup, or code. Return only transformed content.",
+            },
+            {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=True)},
+        ]
+        try:
+            raw = llm_api.get_completion(messages, model_config)
+            if isinstance(raw, str):
+                text = raw.strip()
+                if text:
+                    return text
+        except Exception:
+            pass
+    return original_content
+
+
+def _phase21_next_revision_label(base_label: str) -> str:
+    normalized = _normalize_capture_label(base_label or "revision")
+    normalized = re.sub(r"_rev\d+$", "", normalized)
+    if not normalized:
+        normalized = "revision"
+    existing = _capture_store.get_last(2000)
+    pattern = re.compile(rf"^{re.escape(normalized)}_rev(\d+)$", flags=re.IGNORECASE)
+    max_index = 0
+    for item in existing:
+        label = str(getattr(item, "label", "")).strip()
+        match = pattern.fullmatch(label)
+        if match is None:
+            continue
+        try:
+            max_index = max(max_index, int(match.group(1)))
+        except Exception:
+            continue
+    return f"{normalized}_rev{max_index + 1}"
+
+
+def _phase21_capture_revision(
+    *,
+    revised_text: str,
+    original_label: str,
+    previous_content_id: str,
+    content_type: str,
+    source: str,
+    previous_path: str,
+) -> CapturedContent:
+    revision_label = _phase21_next_revision_label(original_label or "revision")
+    captured = CapturedContent(
+        content_id=f"cc-{uuid.uuid4()}",
+        type=content_type or "text_note",
+        source=source,
+        text=revised_text,
+        timestamp=_utcnow().isoformat(),
+        origin_turn_id=str(current_correlation_id() or ""),
+        label=revision_label,
+        session_id=str(current_session_id() or ""),
+    )
+    _capture_store.append(captured)
+    _emit_observability_event(
+        phase="phase21",
+        event_type="revision_captured",
+        metadata={
+            "content_id": captured.content_id,
+            "label": captured.label,
+            "previous_content_id": previous_content_id,
+            "source": source,
+        },
+    )
+    _phase20_set_working_set(
+        {
+            "content_id": captured.content_id,
+            "label": captured.label,
+            "type": _phase20_normalize_working_set_type(content_type),
+            "source": "phase21_revision",
+            "path": previous_path,
+            "text": revised_text,
+            "origin_turn_id": captured.origin_turn_id,
+            "previous_content_id": previous_content_id,
+            "previous_label": original_label,
+        },
+        reason="phase21_revision_capture",
+    )
+    return captured
+
+
+def _phase21_default_write_path(*, captured: CapturedContent, content_type: str) -> str:
+    suffix = ".txt"
+    normalized_type = _phase20_normalize_working_set_type(content_type)
+    if normalized_type == "html_page":
+        suffix = ".html"
+    elif normalized_type == "code_file":
+        suffix = ".py"
+    filename = f"{_normalize_capture_label(captured.label or captured.content_id)}{suffix}"
+    return str((_WORKSPACE_ROOT / filename).resolve())
+
+
+def _phase21_write_summary(*, intent: str, captured: CapturedContent, original_text: str, revised_text: str) -> str:
+    label = captured.label or captured.content_id
+    return (
+        f"Prepared {intent} and captured '{label}'. "
+        f"Length {len(original_text)} -> {len(revised_text)} characters."
+    )
+
+
+def _phase22_extract_artifact_hint(normalized: str) -> str:
+    lowered = normalized.lower()
+    if "stylesheet" in lowered:
+        return "*.css"
+    if "html" in lowered or "page" in lowered:
+        return "*.html"
+    if "note" in lowered:
+        return "*.txt"
+    direct = re.search(r"\bopen\s+([a-zA-Z0-9._/\-]+)\b", normalized, flags=re.IGNORECASE)
+    if direct is not None:
+        return _strip_wrapping_quotes(direct.group(1))
+    return ""
+
+
+def _phase24_extract_milestone_definition(normalized: str) -> Dict[str, Any] | None:
+    patterns = (
+        r"\bdefine\s+(?:a\s+)?milestone\s*:?\s*(?P<title>.+?)(?:\s+with\s+criteria\s+(?P<criteria>.+))?$",
+        r"\bcreate\s+(?:a\s+)?milestone\s*:?\s*(?P<title>.+?)(?:\s+with\s+criteria\s+(?P<criteria>.+))?$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        title = _strip_wrapping_quotes(str(match.group("title")))
+        if not title:
+            continue
+        criteria_text = _strip_wrapping_quotes(str(match.group("criteria") or ""))
+        criteria = []
+        if criteria_text:
+            criteria = [
+                _normalize(part)
+                for part in re.split(r"(?:;|,|\band\b)", criteria_text, flags=re.IGNORECASE)
+                if _normalize(part)
+            ]
+        goals = re.findall(r"\b(goal-[a-z0-9-]+)\b", normalized, flags=re.IGNORECASE)
+        goals = [str(goal).strip() for goal in goals if str(goal).strip()]
+        if goals and not criteria:
+            criteria = ["all associated goals completed"]
+        return {
+            "title": title,
+            "description": title,
+            "criteria": criteria,
+            "associated_goals": goals,
+        }
+    return None
+
+
+def _phase24_extract_milestone_reference(normalized: str) -> str:
+    milestone_id = re.search(r"\b(ms-[a-z0-9-]+)\b", normalized, flags=re.IGNORECASE)
+    if milestone_id is not None:
+        return str(milestone_id.group(1))
+    named = re.search(r"\bmilestone\s+(?:named|called)\s+(.+)$", normalized, flags=re.IGNORECASE)
+    if named is not None:
+        return _strip_wrapping_quotes(str(named.group(1)))
+    generic = re.search(r"\bmilestone\s+(.+)$", normalized, flags=re.IGNORECASE)
+    if generic is not None:
+        return _strip_wrapping_quotes(str(generic.group(1)))
+    return ""
+
+
+def _phase24_has_explicit_completion_confirmation(normalized: str) -> bool:
+    lowered = normalized.lower()
+    return bool(
+        re.search(
+            r"\b(i confirm|confirm project completion|mark (?:this|the) project as complete|yes[, ]+it is complete)\b",
+            lowered,
+        )
+    )
+
+
+def _parse_phase24_intent(normalized: str) -> Envelope | None:
+    if not _phase24_enabled:
+        return None
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+
+    definition = _phase24_extract_milestone_definition(normalized)
+    if definition is not None:
+        entities: List[Dict[str, Any]] = [
+            {"name": "milestone_title", "value": definition["title"], "normalized": definition["title"]},
+            {"name": "milestone_description", "value": definition["description"], "normalized": definition["description"]},
+            {
+                "name": "milestone_criteria_json",
+                "value": json.dumps(definition["criteria"], ensure_ascii=True),
+                "normalized": json.dumps(definition["criteria"], ensure_ascii=True),
+            },
+            {
+                "name": "milestone_goal_ids_json",
+                "value": json.dumps(definition["associated_goals"], ensure_ascii=True),
+                "normalized": json.dumps(definition["associated_goals"], ensure_ascii=True),
+            },
+        ]
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="define_milestone",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Milestone definition updates project metadata only.",
+        )
+
+    if re.search(r"\b(?:list|show)\s+milestones?\b", lowered):
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="list_milestones",
+            entities=[],
+            requires_approval=False,
+            risk_level="low",
+            reason="Milestone listing is read-only.",
+        )
+
+    if re.search(r"\b(?:describe|show|explain)\s+milestone\b", lowered):
+        reference = _phase24_extract_milestone_reference(normalized)
+        entities: List[Dict[str, Any]] = []
+        if reference:
+            entities.append({"name": "milestone_ref", "value": reference, "normalized": reference})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="describe_milestone",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Milestone description is read-only.",
+        )
+
+    if re.search(r"\b(?:mark|set|achieve)\s+milestone\b", lowered) and re.search(r"\bachieved\b|\bdone\b|\bcomplete\b", lowered):
+        reference = _phase24_extract_milestone_reference(normalized)
+        entities: List[Dict[str, Any]] = []
+        if reference:
+            entities.append({"name": "milestone_ref", "value": reference, "normalized": reference})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="achieve_milestone",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Milestone achievement updates metadata after deterministic criteria checks.",
+        )
+
+    if re.search(r"\b(?:is|show)\s+(?:this|the|current)?\s*project\s+complete\b", lowered) or "project completion status" in lowered:
+        confirmed = "true" if _phase24_has_explicit_completion_confirmation(normalized) else "false"
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="project_completion_status",
+            entities=[{"name": "project_completion_confirm", "value": confirmed, "normalized": confirmed}],
+            requires_approval=False,
+            risk_level="low",
+            reason="Project completion status is advisory read-only output.",
+        )
+
+    if re.search(r"\bfinalize\s+(?:this|the|current)?\s*project\b", lowered):
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="finalize_project",
+            entities=[],
+            requires_approval=True,
+            risk_level="high",
+            reason="Project finalization requires explicit approval.",
+        )
+
+    if re.search(r"\barchive\s+(?:this|the|current)?\s*project\b", lowered):
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="archive_project",
+            entities=[],
+            requires_approval=True,
+            risk_level="high",
+            reason="Project archival moves project artifacts and requires explicit approval.",
+        )
+
+    return None
+
+
+def _phase23_extract_goal_description(normalized: str) -> str:
+    patterns = (
+        r"\bdefine(?:\s+the)?\s+project\s+goal\s*:\s*(?P<goal>.+)$",
+        r"\bdefine(?:\s+the)?\s+project\s+goal\s+(?P<goal>.+)$",
+        r"\bset(?:\s+the)?\s+project\s+goal\s+to\s+(?P<goal>.+)$",
+        r"\bproject\s+goal\s*:\s*(?P<goal>.+)$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        return _strip_wrapping_quotes(str(match.group("goal")))
+    return ""
+
+
+def _phase23_extract_goal_reference(normalized: str) -> str:
+    goal_id = re.search(r"\b(goal-[a-z0-9-]+)\b", normalized, flags=re.IGNORECASE)
+    if goal_id is not None:
+        return str(goal_id.group(1))
+    named = re.search(r"\bgoal\s+(?:named|called)\s+(.+)$", normalized, flags=re.IGNORECASE)
+    if named is not None:
+        return _strip_wrapping_quotes(str(named.group(1)))
+    for_goal = re.search(r"\bfor\s+(?:this|the)\s+goal\s+(.+)$", normalized, flags=re.IGNORECASE)
+    if for_goal is not None:
+        return _strip_wrapping_quotes(str(for_goal.group(1)))
+    return ""
+
+
+def _phase23_extract_task_reference(normalized: str) -> str:
+    task_id = re.search(r"\b(task-[a-z0-9-]+)\b", normalized, flags=re.IGNORECASE)
+    if task_id is not None:
+        return str(task_id.group(1))
+    described = re.search(r"\btask\s+(?:named|called)\s+(.+)$", normalized, flags=re.IGNORECASE)
+    if described is not None:
+        return _strip_wrapping_quotes(str(described.group(1)))
+    return ""
+
+
+def _parse_phase23_intent(normalized: str) -> Envelope | None:
+    if not _phase23_enabled:
+        return None
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+
+    goal_description = _phase23_extract_goal_description(normalized)
+    if goal_description:
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="define_project_goal",
+            entities=[{"name": "project_goal_description", "value": goal_description, "normalized": goal_description}],
+            requires_approval=False,
+            risk_level="low",
+            reason="Project goal definition is advisory metadata with no side effects.",
+        )
+
+    if re.search(r"\b(?:list|show)\s+(?:the\s+)?goals?\b", lowered) and (
+        "project" in lowered or "site" in lowered or "this goal" in lowered
+    ):
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="list_project_goals",
+            entities=[],
+            requires_approval=False,
+            risk_level="low",
+            reason="Project goals listing is read-only.",
+        )
+
+    if re.search(r"\b(?:describe|show|explain)\s+(?:the\s+)?goal\b", lowered):
+        goal_ref = _phase23_extract_goal_reference(normalized)
+        entities: List[Dict[str, Any]] = []
+        if goal_ref:
+            entities.append({"name": "project_goal_id", "value": goal_ref, "normalized": goal_ref})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="describe_project_goal",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Project goal description is read-only.",
+        )
+
+    if (
+        "next tasks" in lowered
+        or "tasks are needed" in lowered
+        or "tasks needed" in lowered
+        or "propose next tasks" in lowered
+    ) and ("goal" in lowered or "project" in lowered or "site" in lowered):
+        goal_ref = _phase23_extract_goal_reference(normalized)
+        entities: List[Dict[str, Any]] = []
+        if goal_ref:
+            entities.append({"name": "project_goal_id", "value": goal_ref, "normalized": goal_ref})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="propose_next_tasks",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Task decomposition is advisory-only output.",
+        )
+
+    if re.search(r"\b(?:list|show)\b.*\btasks\b", lowered):
+        goal_ref = _phase23_extract_goal_reference(normalized)
+        entities: List[Dict[str, Any]] = []
+        if goal_ref:
+            entities.append({"name": "project_goal_id", "value": goal_ref, "normalized": goal_ref})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="list_project_tasks",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Project task listing is read-only.",
+        )
+
+    if re.search(r"\b(?:task status|status of task|what is the status of task)\b", lowered):
+        task_ref = _phase23_extract_task_reference(normalized)
+        entities: List[Dict[str, Any]] = []
+        if task_ref:
+            entities.append({"name": "project_task_id", "value": task_ref, "normalized": task_ref})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="task_status",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Task status lookup is read-only.",
+        )
+
+    if re.search(r"\b(?:mark|set)\s+task\b", lowered) and re.search(r"\b(?:completed?|done)\b", lowered):
+        task_ref = _phase23_extract_task_reference(normalized)
+        entities: List[Dict[str, Any]] = []
+        if task_ref:
+            entities.append({"name": "project_task_id", "value": task_ref, "normalized": task_ref})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="complete_task",
+            entities=entities,
+            requires_approval=False,
+            risk_level="medium",
+            reason="Task completion may require approval when side effects are expected.",
+        )
+
+    if re.search(r"\bcomplete\s+task\b", lowered):
+        task_ref = _phase23_extract_task_reference(normalized)
+        entities: List[Dict[str, Any]] = []
+        if task_ref:
+            entities.append({"name": "project_task_id", "value": task_ref, "normalized": task_ref})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="complete_task",
+            entities=entities,
+            requires_approval=False,
+            risk_level="medium",
+            reason="Task completion may require approval when side effects are expected.",
+        )
+
+    return None
+
+
+def _parse_phase22_intent(normalized: str) -> Envelope | None:
+    if not _phase22_enabled:
+        return None
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+
+    if re.search(
+        r"\b(?:create|start|build)\s+(?:a\s+)?(?:new\s+)?project(?:\s+(?:for|as|named|called)\b|$)",
+        lowered,
+    ):
+        name = _phase22_extract_project_name(normalized)
+        location_hint = "home"
+        root_name = name or "project"
+        root_path = str((Path.home() / "sandbox" / root_name).resolve())
+        entities = [
+            {"name": "project_name", "value": name or "project", "normalized": name or "project"},
+            {"name": "project_root_path", "value": root_path, "normalized": root_path},
+            {"name": "path_location_hint", "value": location_hint, "normalized": location_hint},
+        ]
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="create_project",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Project creation sets session-scoped metadata without filesystem side effects.",
+        )
+
+    if re.search(r"\bdelete\s+(?:this|the|current)?\s*project\b", lowered):
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="delete_project",
+            entities=[],
+            requires_approval=True,
+            risk_level="high",
+            reason="Project deletion is metadata-destructive and requires explicit approval.",
+        )
+
+    if re.search(r"\b(?:list|show)\s+(?:all\s+)?files?\s+in\s+(?:this|the|current)\s+project\b", lowered):
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="list_project_artifacts",
+            entities=[],
+            requires_approval=False,
+            risk_level="low",
+            reason="Project artifact listing is read-only introspection.",
+        )
+
+    if re.search(r"\bwhat\s+project\s+am\s+i\s+working\s+on\b", lowered) or lowered in {"current project", "this project"}:
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="list_project_artifacts",
+            entities=[{"name": "project_diagnostics", "value": "true", "normalized": "true"}],
+            requires_approval=False,
+            risk_level="low",
+            reason="Project diagnostics are advisory and read-only.",
+        )
+
+    if re.search(r"\bshow\s+next\s+steps?\s+for\s+(?:this|the|current)\s+project\b", lowered):
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="project_documentation_generate",
+            entities=[{"name": "project_next_steps", "value": "true", "normalized": "true"}],
+            requires_approval=False,
+            risk_level="low",
+            reason="Project next-step guidance is read-only advisory output.",
+        )
+
+    if re.search(r"\b(?:open|show)\b", lowered) and ("project" in lowered or "site" in lowered):
+        artifact_hint = _phase22_extract_artifact_hint(normalized)
+        entities: List[Dict[str, Any]] = []
+        if artifact_hint:
+            entities.append({"name": "project_artifact_hint", "value": artifact_hint, "normalized": artifact_hint})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="open_project_artifact",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Opening project artifact is read-only introspection.",
+        )
+
+    if re.search(r"\brefactor\s+all\b", lowered) and ("project" in lowered or "site" in lowered):
+        request = _normalize(normalized)
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="project_wide_refactor",
+            entities=[{"name": "phase22_request", "value": request, "normalized": request}],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Project-wide refactor composes governed multi-file writes with approval.",
+        )
+
+    if re.search(r"\b(?:generate|build)\s+(?:project\s+)?documentation\b", lowered) or (
+        "table of contents" in lowered and ("project" in lowered or "site" in lowered)
+    ):
+        request = _normalize(normalized)
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="project_documentation_generate",
+            entities=[{"name": "phase22_request", "value": request, "normalized": request}],
+            requires_approval=False,
+            risk_level="low",
+            reason="Project documentation generation is review-only output.",
+        )
+
+    if re.search(r"\badd\b", lowered) and ("project" in lowered or "site" in lowered):
+        request = _normalize(normalized)
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="update_project",
+            entities=[{"name": "phase22_request", "value": request, "normalized": request}],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Project update may require governed write operations.",
+        )
+
+    return None
+
+
+def _parse_phase21_intent(normalized: str) -> Envelope | None:
+    if not _phase21_enabled:
+        return None
+    if not normalized:
+        return None
+
+    intent = _phase21_detect_intent(normalized)
+    if intent is None:
+        return None
+    if _phase21_is_ambiguous_request(normalized, intent):
+        return _phase17_clarify_envelope(
+            utterance=normalized,
+            message="What specific revision or transformation do you want me to apply?",
+        )
+
+    write_requested = _phase21_request_requires_write(intent, normalized)
+    target_path, location_hint = _phase21_extract_write_target(normalized)
+    instruction = _phase21_extract_instruction(normalized, intent)
+    entities: List[Dict[str, Any]] = [
+        {"name": "phase21_request", "value": instruction, "normalized": instruction},
+        {"name": "phase21_write", "value": "true" if write_requested else "false", "normalized": "true" if write_requested else "false"},
+    ]
+    if target_path:
+        entities.extend(
+            [
+                {"name": "path", "value": target_path, "normalized": target_path},
+                {"name": "path_location_hint", "value": location_hint, "normalized": location_hint},
+            ]
+        )
+    return _phase17_envelope_for_intent(
+        utterance=normalized,
+        intent=intent,
+        entities=entities,
+        requires_approval=write_requested,
+        risk_level="medium",
+        reason="Phase 21 revision/transformation request routed through governed composite handling.",
+    )
+
+
+def _parse_persist_note_intent(normalized: str) -> Envelope | None:
+    if not _phase19_enabled:
+        return None
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    has_note_word = bool(re.search(r"\bnote\b", lowered))
+    has_file_word = bool(re.search(r"\bfile\b", lowered))
+    working_set_reference = _phase19_working_set_reference(normalized)
+    if not any(re.search(rf"\b{verb}\b", lowered) for verb in ("save", "store", "write", "create", "put")):
+        return None
+    if not (has_note_word or has_file_word or "sandbox" in lowered or working_set_reference):
+        return None
+    content_tokens_present = any(
+        token in lowered
+        for token in (
+            "idea",
+            "thought",
+            "text",
+            "snippet",
+            "above",
+            "last response",
+            "this",
+        )
+    )
+    captured_reference = bool(re.search(r"\bthat [a-z0-9_-]+\b", lowered) and has_note_word)
+
+    if not captured_reference and not content_tokens_present and "create a note with" not in lowered:
+        return None
+
+    explicit_file_target = re.search(r"\bto file\s+(?P<target>[A-Za-z0-9._/\-]+)", lowered)
+    if explicit_file_target is not None and not has_note_word:
+        target_token = str(explicit_file_target.group("target"))
+        if target_token not in {"a", "an", "the", "my", "in"}:
+            return None
+
+    filesystem_candidate = _parse_filesystem_intent(normalized)
+    if filesystem_candidate is not None and str(filesystem_candidate.get("intent", "")) in _FILESYSTEM_INTENTS:
+        return None
+
+    inline_content = _phase19_extract_inline_content(normalized)
+    filename_raw = _phase19_extract_filename(normalized)
+    references_last_response = _phase19_last_response_reference(normalized)
+    generation_hint = _phase19_generation_hint(normalized)
+    if (
+        not inline_content
+        and not references_last_response
+        and not generation_hint
+        and not captured_reference
+        and not working_set_reference
+    ):
+        return None
+
+    entities: List[Dict[str, Any]] = []
+    if inline_content:
+        entities.append({"name": "persist_note_content", "value": inline_content, "normalized": inline_content})
+    if filename_raw:
+        entities.append({"name": "persist_note_filename", "value": filename_raw, "normalized": filename_raw})
+    if references_last_response:
+        entities.append({"name": "persist_note_reference", "value": "last_response", "normalized": "last_response"})
+    if working_set_reference:
+        entities.append({"name": "persist_note_reference", "value": "working_set", "normalized": "working_set"})
+    if generation_hint:
+        entities.append({"name": "persist_note_generate", "value": "true", "normalized": "true"})
+
+    return _phase17_envelope_for_intent(
+        utterance=normalized,
+        intent=_PHASE19_PERSIST_NOTE_INTENT,
+        entities=entities,
+        requires_approval=True,
+        risk_level="medium",
+        reason="Persist-note request composes to governed write_file with explicit approval.",
     )
 
 
@@ -879,6 +3326,18 @@ def _phase16_capture_response(
             "source": captured.source,
         },
     )
+    _phase20_set_working_set(
+        {
+            "content_id": captured.content_id,
+            "label": captured.label,
+            "type": _phase20_working_set_type_from_text(captured.text),
+            "source": "capture",
+            "path": "",
+            "text": captured.text,
+            "origin_turn_id": captured.origin_turn_id,
+        },
+        reason="capture_success",
+    )
     label_part = f" with label '{captured.label}'" if captured.label else ""
     return {
         "type": "content_captured",
@@ -1077,6 +3536,1005 @@ def _phase16_apply_to_envelope(
     return None, updated
 
 
+def _phase19_apply_to_envelope(
+    *,
+    envelope: Envelope,
+    normalized_utterance: str,
+) -> tuple[Dict[str, Any] | None, Envelope]:
+    if not _phase19_enabled:
+        return None, envelope
+    if str(envelope.get("intent", "")) != _PHASE19_PERSIST_NOTE_INTENT:
+        return None, envelope
+
+    entities = envelope.get("entities", [])
+    entities = entities if isinstance(entities, list) else []
+
+    inline_content = ""
+    filename_raw = ""
+    generate_hint = False
+    use_last_response = False
+    use_working_set_reference = False
+    captured_text = ""
+    captured_content_id = ""
+    captured_label = ""
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        name = str(entity.get("name", ""))
+        value = str(entity.get("normalized") or entity.get("value") or "")
+        if name == "persist_note_content":
+            inline_content = value
+        elif name == "persist_note_filename":
+            filename_raw = value
+        elif name == "persist_note_generate":
+            generate_hint = value.lower() == "true"
+        elif name == "persist_note_reference" and value == "last_response":
+            use_last_response = True
+        elif name == "persist_note_reference" and value == "working_set":
+            use_working_set_reference = True
+        elif name == "captured_content":
+            captured_text = str(entity.get("text") or "")
+            captured_content_id = str(entity.get("content_id") or "").strip()
+            captured_label = str(entity.get("label") or "").strip()
+
+    content = inline_content.strip()
+    source = "inline"
+    resolved_content_id = ""
+    resolved_label = ""
+    resolved_type = ""
+    if not content and captured_text.strip():
+        content = captured_text.strip()
+        source = "captured_content"
+        resolved_content_id = captured_content_id
+        resolved_label = captured_label
+        resolved_type = _phase20_working_set_type_from_text(content)
+    if not content and use_last_response:
+        candidate = _phase16_last_response_candidate()
+        if candidate is not None:
+            candidate_text = str(candidate.get("text", "")).strip()
+            if candidate_text:
+                content = candidate_text
+                source = "last_response"
+    if not content and (use_working_set_reference or _phase20_implicit_reference_requested(normalized_utterance)):
+        working_set = _phase20_get_working_set()
+        if isinstance(working_set, dict):
+            working_set_text = str(working_set.get("text", "")).strip()
+            if working_set_text:
+                content = working_set_text
+                source = "working_set"
+                resolved_content_id = str(working_set.get("content_id", "")).strip()
+                resolved_label = str(working_set.get("label", "")).strip()
+                resolved_type = str(working_set.get("type", "")).strip()
+    if not content and (generate_hint or use_last_response):
+        content = _phase19_generate_note_content(normalized_utterance).strip()
+        source = "generated"
+    if not content:
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message=(
+                "What text should I persist in the note? "
+                "You can provide inline text or refer to prior content."
+            ),
+        )
+
+    filename = _phase19_normalize_filename(filename_raw) if filename_raw else _phase19_default_filename()
+    if not filename:
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="Please provide a safe filename like notes.txt.",
+        )
+
+    resolved_path = str(_phase19_notes_root() / filename)
+    composed_entities = [
+        {"name": "path", "value": resolved_path, "normalized": resolved_path},
+        {"name": "path_location_hint", "value": "home", "normalized": "home"},
+        {"name": "contents", "value": content, "normalized": content},
+        {"name": "persist_note", "value": "true", "normalized": "true"},
+        {"name": "persist_note_filename", "value": filename, "normalized": filename},
+        {"name": "persist_note_content_source", "value": source, "normalized": source},
+    ]
+    if source == "captured_content" and resolved_content_id:
+        composed_entities.append(
+            {
+                "name": "captured_content",
+                "content_id": resolved_content_id,
+                "label": resolved_label,
+                "type": resolved_type or _phase20_working_set_type_from_text(content),
+                "source": "capture",
+                "text": content,
+                "origin_turn_id": str(current_correlation_id() or ""),
+            }
+        )
+    if source == "working_set" and resolved_content_id:
+        composed_entities.append(
+            {
+                "name": "working_set_content",
+                "content_id": resolved_content_id,
+                "label": resolved_label,
+                "type": _phase20_normalize_working_set_type(resolved_type),
+                "source": "working_set",
+                "path": "",
+                "text": content,
+                "timestamp": _phase20_now_iso(),
+            }
+        )
+    updated = copy.deepcopy(envelope)
+    updated["intent"] = "write_file"
+    updated["entities"] = composed_entities
+    updated["requires_approval"] = True
+    policy = dict(updated.get("policy", {}))
+    policy["allowed"] = True
+    policy["risk_level"] = "medium"
+    policy["reason"] = "Persist-note request composed to governed write_file execution."
+    updated["policy"] = policy
+    return None, updated
+
+
+def _phase20_apply_to_envelope(
+    *,
+    envelope: Envelope,
+    normalized_utterance: str,
+) -> tuple[Dict[str, Any] | None, Envelope]:
+    if not _phase20_enabled:
+        return None, envelope
+    if str(envelope.get("lane", "")).upper() != "PLAN":
+        return None, envelope
+    intent = str(envelope.get("intent", "")).strip()
+    if intent not in {"write_file", "append_file"}:
+        return None, envelope
+    if _phase20_explicit_label_reference(normalized_utterance):
+        return None, envelope
+    if not _phase20_implicit_reference_requested(normalized_utterance):
+        return None, envelope
+
+    entities = envelope.get("entities", [])
+    entities = entities if isinstance(entities, list) else []
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        if str(entity.get("name", "")) in {"captured_content", "captured_content_label"}:
+            return None, envelope
+
+    contents_value = _entity_string(envelope, "contents")
+    if contents_value.strip() and not _phase20_placeholder_contents(contents_value):
+        return None, envelope
+
+    working_set = _phase20_get_working_set()
+    if not isinstance(working_set, dict):
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="No active working set. Capture or persist content first, then refer to this/that/current/it.",
+        )
+    working_set_text = str(working_set.get("text", "")).strip()
+    if not working_set_text:
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="Active working set has no text content to apply here.",
+        )
+
+    updated = copy.deepcopy(envelope)
+    updated_entities = updated.get("entities", [])
+    updated_entities = updated_entities if isinstance(updated_entities, list) else []
+    replaced = False
+    for entity in updated_entities:
+        if not isinstance(entity, dict):
+            continue
+        if str(entity.get("name", "")) == "contents":
+            entity["value"] = working_set_text
+            entity["normalized"] = working_set_text
+            replaced = True
+            break
+    if not replaced:
+        updated_entities.append({"name": "contents", "value": working_set_text, "normalized": working_set_text})
+    updated_entities.append(
+        {
+            "name": "working_set_content",
+            "content_id": str(working_set.get("content_id", "")),
+            "label": str(working_set.get("label", "")),
+            "type": str(working_set.get("type", "")),
+            "source": str(working_set.get("source", "")),
+            "path": str(working_set.get("path", "")),
+            "text": working_set_text,
+            "timestamp": str(working_set.get("timestamp", "")),
+        }
+    )
+    updated["entities"] = updated_entities
+    _emit_observability_event(
+        phase="phase20",
+        event_type="working_set_resolved",
+        metadata={
+            "intent": intent,
+            "content_id": str(working_set.get("content_id", "")),
+            "label": str(working_set.get("label", "")),
+        },
+    )
+    return None, updated
+
+
+def _phase21_apply_to_envelope(
+    *,
+    envelope: Envelope,
+    normalized_utterance: str,
+) -> tuple[Dict[str, Any] | None, Envelope]:
+    if not _phase21_enabled:
+        return None, envelope
+    intent = str(envelope.get("intent", "")).strip()
+    if intent not in _PHASE21_INTENTS:
+        return None, envelope
+
+    request = _entity_string(envelope, "phase21_request") or normalized_utterance
+    if _phase21_is_ambiguous_request(normalized_utterance, intent):
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="What specific revision or transformation should I apply?",
+        )
+
+    explicit_reference, explicit_error = _resolve_captured_reference(normalized_utterance)
+    if explicit_error:
+        return {
+            "type": "capture_reference_rejected",
+            "executed": False,
+            "envelope": envelope,
+            "message": explicit_error,
+        }, envelope
+
+    original_content = ""
+    original_label = ""
+    original_content_id = ""
+    original_type = "other"
+    original_path = ""
+
+    if explicit_reference is not None:
+        original_content = str(explicit_reference.text or "")
+        original_label = str(explicit_reference.label or "")
+        original_content_id = str(explicit_reference.content_id or "")
+        original_type = _phase20_normalize_working_set_type(str(explicit_reference.type or "text_note"))
+    else:
+        working_set = _phase20_get_working_set()
+        if not isinstance(working_set, dict):
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="No active working set. Capture or generate content first, then ask to revise or transform it.",
+            )
+        original_label = str(working_set.get("label", "")).strip()
+        original_content_id = str(working_set.get("content_id", "")).strip()
+        original_type = _phase20_normalize_working_set_type(str(working_set.get("type", "other")))
+        original_path = str(working_set.get("path", "")).strip()
+        original_content = str(working_set.get("text", "") or "")
+        if not original_content.strip() and original_path:
+            original_content = _phase21_read_content_from_path(original_path)
+
+    if not original_content.strip():
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="I could not resolve content to revise. Please reference captured content or provide text explicitly.",
+        )
+
+    revised_content = _phase21_generate_transformed_content(
+        original_content=original_content,
+        request=request,
+        content_type=original_type,
+        intent=intent,
+    ).strip()
+    if not revised_content:
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="I could not generate a revised result. Please clarify the change you want.",
+        )
+
+    captured = _phase21_capture_revision(
+        revised_text=revised_content,
+        original_label=original_label or original_content_id or intent,
+        previous_content_id=original_content_id,
+        content_type=original_type,
+        source=intent,
+        previous_path=original_path,
+    )
+    summary = _phase21_write_summary(
+        intent=intent,
+        captured=captured,
+        original_text=original_content,
+        revised_text=revised_content,
+    )
+
+    write_requested = _entity_string(envelope, "phase21_write").lower() == "true"
+    explicit_path = _entity_string(envelope, "path")
+    location_hint = _entity_string(envelope, "path_location_hint") or "workspace"
+    if write_requested:
+        target_path = explicit_path or original_path or _phase21_default_write_path(captured=captured, content_type=original_type)
+        if not target_path:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="Please provide a file path for the revised content.",
+            )
+        composed = _phase17_envelope_for_intent(
+            utterance=normalized_utterance,
+            intent="write_file",
+            entities=[
+                {"name": "path", "value": target_path, "normalized": target_path},
+                {"name": "path_location_hint", "value": location_hint, "normalized": location_hint},
+                {"name": "contents", "value": revised_content, "normalized": revised_content},
+                {"name": "phase21_composite", "value": intent, "normalized": intent},
+                {"name": "phase21_summary", "value": summary, "normalized": summary},
+                {
+                    "name": "captured_content",
+                    "content_id": captured.content_id,
+                    "label": captured.label,
+                    "type": captured.type,
+                    "source": captured.source,
+                    "text": captured.text,
+                    "origin_turn_id": captured.origin_turn_id,
+                },
+            ],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Revision/transformation write-back requires explicit approval.",
+        )
+        return None, composed
+
+    response_type = "content_revised" if intent == "revise_content" else "content_transformed"
+    return {
+        "type": response_type,
+        "executed": False,
+        "envelope": envelope,
+        "capture_eligible": True,
+        "captured_content": captured.to_dict(),
+        "revised_content": revised_content,
+        "message": revised_content,
+        "summary": summary,
+    }, envelope
+
+
+def _phase22_location_hint_for_path(path: str) -> str:
+    try:
+        resolved = Path(path).resolve(strict=False)
+    except Exception:
+        return "workspace"
+    home_root = Path.home().resolve()
+    if _phase17_is_within(resolved, home_root):
+        return "home"
+    return "workspace"
+
+
+def _phase22_list_project_artifact_paths(project: Dict[str, Any]) -> List[str]:
+    artifacts = project.get("artifacts", [])
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    paths = [str(item.get("path", "")) for item in artifacts if isinstance(item, dict)]
+    return sorted([path for path in paths if path])
+
+
+def _phase22_find_artifact_path(project: Dict[str, Any], hint: str) -> str:
+    root = Path(str(project.get("root_path", "")))
+    artifacts = _phase22_list_project_artifact_paths(project)
+    lowered_hint = _normalize(hint).lower()
+    if lowered_hint in {"*.css", "stylesheet"}:
+        for rel in artifacts:
+            if rel.lower().endswith(".css"):
+                return str((root / rel).resolve())
+    if lowered_hint in {"*.html", "page"}:
+        for rel in artifacts:
+            if rel.lower().endswith((".html", ".htm")):
+                return str((root / rel).resolve())
+    for rel in artifacts:
+        if lowered_hint and lowered_hint in rel.lower():
+            return str((root / rel).resolve())
+    if hint and not any(ch in hint for ch in ("*", "?", "[")):
+        candidate = (root / hint).resolve(strict=False)
+        return str(candidate)
+    return ""
+
+
+def _phase22_resolve_refactor_targets(project: Dict[str, Any], request: str) -> List[str]:
+    root = Path(str(project.get("root_path", "")))
+    artifacts = _phase22_list_project_artifact_paths(project)
+    lowered = request.lower()
+    if "html" in lowered:
+        return [str((root / rel).resolve()) for rel in artifacts if rel.lower().endswith((".html", ".htm"))]
+    if "css" in lowered or "stylesheet" in lowered:
+        return [str((root / rel).resolve()) for rel in artifacts if rel.lower().endswith(".css")]
+    if "notes" in lowered:
+        return [str((root / rel).resolve()) for rel in artifacts if rel.lower().endswith(".txt")]
+    return [str((root / rel).resolve()) for rel in artifacts]
+
+
+def _phase22_project_doc_text(project: Dict[str, Any]) -> str:
+    name = str(project.get("name", "project"))
+    root_path = str(project.get("root_path", ""))
+    artifacts = _phase22_list_project_artifact_paths(project)
+    lines = [f"# Project {name}", f"Root: {root_path}", "", "## Artifacts"]
+    if artifacts:
+        lines.extend([f"- {item}" for item in artifacts])
+    else:
+        lines.append("- (none)")
+    lines.extend(["", "## Next Steps"])
+    if artifacts:
+        lines.extend(
+            [
+                "- Revise key pages and styles.",
+                "- Generate project documentation snapshot.",
+                "- Run project-wide refactor when needed.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "- Add initial pages/files.",
+                "- Capture and persist project notes.",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _phase22_apply_to_envelope(
+    *,
+    envelope: Envelope,
+    normalized_utterance: str,
+) -> tuple[Dict[str, Any] | None, Envelope]:
+    global _pending_plan
+    if not _phase22_enabled:
+        return None, envelope
+
+    intent = str(envelope.get("intent", "")).strip()
+    if intent not in _PHASE22_PROJECT_INTENTS:
+        return None, envelope
+
+    if intent == "create_project":
+        name = _phase22_slug(_entity_string(envelope, "project_name") or _phase22_extract_project_name(normalized_utterance) or "project")
+        root_path_raw = _entity_string(envelope, "project_root_path") or str((Path.home() / "sandbox" / name).resolve())
+        location_hint = _entity_string(envelope, "path_location_hint") or _phase22_location_hint_for_path(root_path_raw)
+        root_path, error = _phase22_normalize_project_root(root_path_raw, location_hint=location_hint)
+        if error:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message=f"Project root is invalid: {error}",
+            )
+        project = _phase22_create_project_record(name=name, root_path=str(root_path))
+        return {
+            "type": "project_created",
+            "executed": False,
+            "envelope": envelope,
+            "project": copy.deepcopy(project),
+            "message": f"Project '{project['name']}' created at {project['root_path']}.",
+        }, envelope
+
+    project = _phase22_resolve_project_from_utterance(normalized_utterance)
+    if project is None:
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="No active project. Create or select a project first.",
+        )
+    _phase22_set_project_context(project)
+    if intent in {"update_project", "project_wide_refactor"} and not _phase24_project_is_writable(project):
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message=(
+                f"Project '{project.get('name', '')}' is {_phase24_project_state(project)} and read-only. "
+                "Reactivate or clone the project before editing."
+            ),
+        )
+
+    if intent == "list_project_artifacts":
+        diagnostics_only = _entity_string(envelope, "project_diagnostics").lower() == "true"
+        if diagnostics_only:
+            return {
+                "type": "project_info",
+                "executed": False,
+                "envelope": envelope,
+                "project": copy.deepcopy(project),
+                "message": f"You are currently working on project '{project.get('name', '')}'.",
+            }, envelope
+        artifacts = _phase22_list_project_artifact_paths(project)
+        message = "\n".join(artifacts) if artifacts else "No artifacts recorded for this project."
+        return {
+            "type": "project_artifacts",
+            "executed": False,
+            "envelope": envelope,
+            "project": copy.deepcopy(project),
+            "artifacts": artifacts,
+            "message": message,
+        }, envelope
+
+    if intent == "open_project_artifact":
+        artifact_hint = _entity_string(envelope, "project_artifact_hint") or _phase22_extract_artifact_hint(normalized_utterance)
+        target_path = _phase22_find_artifact_path(project, artifact_hint)
+        if not target_path:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="Which project artifact should I open?",
+            )
+        contents = _phase21_read_content_from_path(target_path)
+        if not contents:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="That artifact could not be read from the project root.",
+            )
+        return {
+            "type": "project_artifact_opened",
+            "executed": False,
+            "envelope": envelope,
+            "project": copy.deepcopy(project),
+            "path": target_path,
+            "message": contents,
+        }, envelope
+
+    if intent == "project_documentation_generate":
+        if _entity_string(envelope, "project_next_steps").lower() == "true":
+            artifacts = _phase22_list_project_artifact_paths(project)
+            next_steps = ["Add initial artifacts to this project."] if not artifacts else [
+                "Revise key files in the project.",
+                "Generate project documentation snapshot.",
+                "Run project-wide refactor for consistency.",
+            ]
+            return {
+                "type": "project_next_steps",
+                "executed": False,
+                "envelope": envelope,
+                "project": copy.deepcopy(project),
+                "next_steps": next_steps,
+                "message": " ".join(next_steps),
+            }, envelope
+        documentation = _phase22_project_doc_text(project)
+        return {
+            "type": "project_documentation",
+            "executed": False,
+            "envelope": envelope,
+            "capture_eligible": True,
+            "project": copy.deepcopy(project),
+            "message": documentation,
+        }, envelope
+
+    if intent == "delete_project":
+        delete_envelope = _phase17_envelope_for_intent(
+            utterance=normalized_utterance,
+            intent="delete_project",
+            entities=[
+                {"name": "project_id", "value": str(project.get("project_id", "")), "normalized": str(project.get("project_id", ""))},
+                {"name": "project_name", "value": str(project.get("name", "")), "normalized": str(project.get("name", ""))},
+                {"name": "project_root_path", "value": str(project.get("root_path", "")), "normalized": str(project.get("root_path", ""))},
+                {
+                    "name": "phase22_summary",
+                    "value": f"Project deletion requested for '{project.get('name', '')}'.",
+                    "normalized": f"Project deletion requested for '{project.get('name', '')}'.",
+                },
+            ],
+            requires_approval=True,
+            risk_level="high",
+            reason="Project deletion requires explicit approval.",
+        )
+        return None, delete_envelope
+
+    if intent == "update_project":
+        request = _entity_string(envelope, "phase22_request") or normalized_utterance
+        page_match = re.search(r"\badd\s+(?:an?\s+)?([a-zA-Z0-9_-]+)\s+page\b", request, flags=re.IGNORECASE)
+        if page_match is None:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="What project artifact should I add or update?",
+            )
+        page_name = _phase22_slug(page_match.group(1))
+        target_path = str((Path(str(project.get("root_path", ""))) / f"{page_name}.html").resolve())
+        generated = _phase21_generate_transformed_content(
+            original_content=f"<html><body><h1>{page_name.title()}</h1></body></html>",
+            request=request,
+            content_type="html_page",
+            intent="revise_content",
+        )
+        update_envelope = _phase17_envelope_for_intent(
+            utterance=normalized_utterance,
+            intent="write_file",
+            entities=[
+                {"name": "path", "value": target_path, "normalized": target_path},
+                {"name": "path_location_hint", "value": _phase22_location_hint_for_path(target_path), "normalized": _phase22_location_hint_for_path(target_path)},
+                {"name": "contents", "value": generated, "normalized": generated},
+                {"name": "phase22_project_id", "value": str(project.get("project_id", "")), "normalized": str(project.get("project_id", ""))},
+                {
+                    "name": "phase22_summary",
+                    "value": f"Updating project '{project.get('name', '')}' with page '{page_name}'.",
+                    "normalized": f"Updating project '{project.get('name', '')}' with page '{page_name}'.",
+                },
+            ],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Project update writes require explicit approval.",
+        )
+        return None, update_envelope
+
+    if intent == "project_wide_refactor":
+        request = _entity_string(envelope, "phase22_request") or normalized_utterance
+        targets = _phase22_resolve_refactor_targets(project, request)
+        targets = [path for path in targets if _phase21_read_content_from_path(path)]
+        if not targets:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="No matching project artifacts were found for project-wide refactor.",
+            )
+
+        write_contract = _resolve_tool_contract("write_file")
+        if write_contract is None:
+            return {
+                "type": "execution_rejected",
+                "executed": False,
+                "message": "Execution rejected: write_file contract unavailable.",
+            }, envelope
+
+        steps: List[PlanStep] = []
+        for index, target_path in enumerate(targets, start=1):
+            original = _phase21_read_content_from_path(target_path)
+            if not original:
+                continue
+            revised = _phase21_generate_transformed_content(
+                original_content=original,
+                request=request,
+                content_type=_phase22_artifact_type_from_path(target_path),
+                intent="project_wide_refactor",
+            ).strip()
+            if not revised:
+                continue
+            captured = _phase21_capture_revision(
+                revised_text=revised,
+                original_label=f"{project.get('name', 'project')}_{Path(target_path).stem}",
+                previous_content_id="",
+                content_type=_phase22_artifact_type_from_path(target_path),
+                source="project_wide_refactor",
+                previous_path=target_path,
+            )
+            relpath = _phase22_artifact_relpath(project, target_path)
+            step_envelope = _phase17_envelope_for_intent(
+                utterance=f"refactor {relpath}",
+                intent="write_file",
+                entities=[
+                    {"name": "path", "value": target_path, "normalized": target_path},
+                    {"name": "path_location_hint", "value": _phase22_location_hint_for_path(target_path), "normalized": _phase22_location_hint_for_path(target_path)},
+                    {"name": "contents", "value": revised, "normalized": revised},
+                    {"name": "phase22_project_id", "value": str(project.get("project_id", "")), "normalized": str(project.get("project_id", ""))},
+                    {"name": "phase22_project_artifact", "value": relpath, "normalized": relpath},
+                    {
+                        "name": "captured_content",
+                        "content_id": captured.content_id,
+                        "label": captured.label,
+                        "type": captured.type,
+                        "source": captured.source,
+                        "text": captured.text,
+                        "origin_turn_id": captured.origin_turn_id,
+                    },
+                ],
+                requires_approval=True,
+                risk_level="medium",
+                reason="Project-wide refactor step requires explicit approval.",
+            )
+            parameters = _tool_parameters_from_envelope(write_contract, step_envelope)
+            steps.append(
+                PlanStep(
+                    step_id=f"step-{index}",
+                    description=f"Refactor {relpath}",
+                    tool_contract=write_contract,
+                    parameters=parameters,
+                    risk_level=write_contract.risk_level,
+                    envelope_snapshot=step_envelope,
+                )
+            )
+
+        if not steps:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="No valid refactor steps were generated for this project.",
+            )
+
+        if _phase8_enabled:
+            plan = ExecutionPlan(
+                plan_id=f"plan-{uuid.uuid4()}",
+                intent="project_wide_refactor",
+                steps=steps,
+            )
+            _pending_plan = _create_pending_plan(plan)
+            return {
+                "type": "plan_approval_required",
+                "executed": False,
+                "plan": _serialize_plan(plan),
+                "message": _plan_approval_message(_pending_plan),
+            }, envelope
+
+        first_step = steps[0].envelope_snapshot
+        return None, first_step
+
+    return None, envelope
+
+
+def _phase23_apply_to_envelope(
+    *,
+    envelope: Envelope,
+    normalized_utterance: str,
+) -> tuple[Dict[str, Any] | None, Envelope]:
+    if not _phase23_enabled:
+        return None, envelope
+
+    intent = str(envelope.get("intent", "")).strip()
+    if intent not in _PHASE23_GOAL_INTENTS:
+        return None, envelope
+
+    project = _phase22_resolve_project_from_utterance(normalized_utterance)
+    if project is None:
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="No active project. Create or select a project first.",
+        )
+    _phase22_set_project_context(project)
+    project_id = str(project.get("project_id", ""))
+
+    if intent == "define_project_goal":
+        description = _normalize(_entity_string(envelope, "project_goal_description"))
+        if not description:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="Please provide a project goal description.",
+            )
+        return handle_define_project_goal(project, description), envelope
+
+    if intent == "list_project_goals":
+        return handle_list_project_goals(project), envelope
+
+    if intent == "describe_project_goal":
+        goal_ref = _entity_string(envelope, "project_goal_id")
+        goal, error = _phase23_resolve_goal(project_id, goal_ref or None)
+        if error:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message=error,
+            )
+        return handle_describe_project_goal(project, goal), envelope
+
+    if intent == "propose_next_tasks":
+        goal_ref = _entity_string(envelope, "project_goal_id")
+        goal, error = _phase23_resolve_goal(project_id, goal_ref or None)
+        if error:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message=error,
+            )
+        return handle_propose_next_tasks(project, goal), envelope
+
+    if intent == "list_project_tasks":
+        goal_ref = _entity_string(envelope, "project_goal_id")
+        if goal_ref:
+            goal, error = _phase23_resolve_goal(project_id, goal_ref)
+            if error:
+                return _phase19_clarify_response(
+                    utterance=normalized_utterance,
+                    message=error,
+                )
+            return handle_list_project_tasks(project, goal_id=str(goal.get("goal_id", ""))), envelope
+        return handle_list_project_tasks(project), envelope
+
+    if intent == "task_status":
+        task_ref = _entity_string(envelope, "project_task_id")
+        if not task_ref:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="Specify a task_id to inspect status.",
+            )
+        _phase23_refresh_blocked_statuses(project_id)
+        task, error = _phase23_resolve_task(project_id, task_ref)
+        if error:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message=error,
+            )
+        return handle_task_status(project, task), envelope
+
+    if intent == "complete_task":
+        task_ref = _entity_string(envelope, "project_task_id")
+        if not task_ref:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="Specify which task to complete (for example: task-...).",
+            )
+        _phase23_refresh_blocked_statuses(project_id)
+        task, error = _phase23_resolve_task(project_id, task_ref)
+        if error:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message=error,
+            )
+        if str(task.get("status", "")) == "COMPLETED":
+            return handle_task_status(project, task), envelope
+        goal = _phase23_goal_by_id(project_id, str(task.get("goal_id", ""))) or {}
+        if _phase23_task_requires_approval(task):
+            project_name = str(project.get("name", "project"))
+            goal_description = str(goal.get("description", "unspecified goal"))
+            task_description = str(task.get("description", ""))
+            task_id = str(task.get("task_id", ""))
+            expected_change = task_description or "Apply task updates."
+            summary = (
+                f"Project '{project_name}' goal '{goal_description}' task '{task_id}: {task_description}'. "
+                f"Expected change: {expected_change}. "
+            )
+            completion_envelope = _phase17_envelope_for_intent(
+                utterance=normalized_utterance,
+                intent="plan.user_action_request",
+                entities=[
+                    {"name": "phase23_complete_task", "value": "true", "normalized": "true"},
+                    {"name": "phase23_project_id", "value": project_id, "normalized": project_id},
+                    {"name": "phase23_goal_id", "value": str(task.get("goal_id", "")), "normalized": str(task.get("goal_id", ""))},
+                    {"name": "phase23_task_id", "value": task_id, "normalized": task_id},
+                    {"name": "phase23_expected_change", "value": expected_change, "normalized": expected_change},
+                    {"name": "phase23_summary", "value": summary, "normalized": summary},
+                ],
+                requires_approval=True,
+                risk_level="medium",
+                reason="Completing task with side-effect potential requires explicit approval.",
+            )
+            return None, completion_envelope
+        return handle_complete_task(project, task), envelope
+
+    return None, envelope
+
+
+def _phase24_apply_to_envelope(
+    *,
+    envelope: Envelope,
+    normalized_utterance: str,
+) -> tuple[Dict[str, Any] | None, Envelope]:
+    if not _phase24_enabled:
+        return None, envelope
+
+    intent = str(envelope.get("intent", "")).strip()
+    if intent not in _PHASE24_MILESTONE_INTENTS:
+        return None, envelope
+
+    project = _phase22_resolve_project_from_utterance(normalized_utterance)
+    if project is None:
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="No active project. Create or select a project first.",
+        )
+    _phase22_set_project_context(project)
+    project_id = str(project.get("project_id", ""))
+
+    if intent == "define_milestone":
+        title = _normalize(_entity_string(envelope, "milestone_title"))
+        description = _normalize(_entity_string(envelope, "milestone_description")) or title
+        raw_criteria = _entity_string(envelope, "milestone_criteria_json")
+        raw_goal_ids = _entity_string(envelope, "milestone_goal_ids_json")
+        if not title:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="Please provide a milestone title.",
+            )
+        criteria: List[str] = []
+        goal_ids: List[str] = []
+        if raw_criteria:
+            try:
+                parsed = json.loads(raw_criteria)
+                if isinstance(parsed, list):
+                    criteria = [_normalize(str(item)) for item in parsed if _normalize(str(item))]
+            except Exception:
+                criteria = []
+        if raw_goal_ids:
+            try:
+                parsed = json.loads(raw_goal_ids)
+                if isinstance(parsed, list):
+                    goal_ids = [str(item).strip() for item in parsed if str(item).strip()]
+            except Exception:
+                goal_ids = []
+        for goal_id in goal_ids:
+            if _phase23_goal_by_id(project_id, goal_id) is None:
+                return _phase19_clarify_response(
+                    utterance=normalized_utterance,
+                    message=f"Associated goal '{goal_id}' does not exist in this project.",
+                )
+        if goal_ids and not criteria:
+            criteria = ["all associated goals completed"]
+        return handle_define_milestone(
+            project,
+            title=title,
+            description=description,
+            associated_goals=goal_ids,
+            criteria=criteria,
+        ), envelope
+
+    if intent == "list_milestones":
+        return handle_list_milestones(project), envelope
+
+    if intent == "describe_milestone":
+        reference = _entity_string(envelope, "milestone_ref")
+        milestone, error = _phase24_resolve_milestone(project_id, reference or None)
+        if error:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message=error,
+            )
+        return handle_describe_milestone(project, milestone), envelope
+
+    if intent == "achieve_milestone":
+        reference = _entity_string(envelope, "milestone_ref")
+        milestone, error = _phase24_resolve_milestone(project_id, reference or None)
+        if error:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message=error,
+            )
+        if str(milestone.get("status", "")) == "ACHIEVED":
+            return handle_describe_milestone(project, milestone), envelope
+        compliant, reasons = _phase24_milestone_compliance(project_id, milestone)
+        if not compliant:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="Milestone criteria are not satisfied: " + " ".join(reasons),
+            )
+        return handle_achieve_milestone(project, milestone), envelope
+
+    if intent == "project_completion_status":
+        explicit_confirmation = _entity_string(envelope, "project_completion_confirm").lower() == "true"
+        return handle_project_completion_status(
+            project,
+            explicit_confirmation=explicit_confirmation,
+        ), envelope
+
+    if intent == "finalize_project":
+        state = _phase24_project_state(project)
+        if state == "finalized":
+            return {
+                "type": "project_finalized",
+                "executed": False,
+                "project": copy.deepcopy(project),
+                "message": f"Project '{project.get('name', '')}' is already finalized.",
+            }, envelope
+        if state == "archived":
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message=f"Project '{project.get('name', '')}' is archived and cannot be finalized again.",
+            )
+        completion = _phase24_project_completion_snapshot(project, explicit_confirmation=True)
+        if not completion["all_milestones_achieved"] or not completion["no_pending_tasks"]:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="Project is not ready to finalize. " + " ".join(completion.get("next_steps", [])),
+            )
+        summary = _phase24_project_summary_text(project)
+        finalize_envelope = _phase17_envelope_for_intent(
+            utterance=normalized_utterance,
+            intent="finalize_project",
+            entities=[
+                {"name": "project_id", "value": project_id, "normalized": project_id},
+                {"name": "project_name", "value": str(project.get("name", "")), "normalized": str(project.get("name", ""))},
+                {"name": "phase24_summary", "value": f"Finalize project '{project.get('name', '')}'.", "normalized": f"Finalize project '{project.get('name', '')}'."},
+                {"name": "phase24_project_summary", "value": summary, "normalized": summary},
+            ],
+            requires_approval=True,
+            risk_level="high",
+            reason="Project finalization requires explicit approval.",
+        )
+        return None, finalize_envelope
+
+    if intent == "archive_project":
+        state = _phase24_project_state(project)
+        if state == "archived":
+            return {
+                "type": "project_archived",
+                "executed": False,
+                "project": copy.deepcopy(project),
+                "message": f"Project '{project.get('name', '')}' is already archived.",
+            }, envelope
+        archive_root = _phase24_archive_root(project)
+        archive_envelope = _phase17_envelope_for_intent(
+            utterance=normalized_utterance,
+            intent="archive_project",
+            entities=[
+                {"name": "project_id", "value": project_id, "normalized": project_id},
+                {"name": "project_name", "value": str(project.get("name", "")), "normalized": str(project.get("name", ""))},
+                {"name": "project_root_path", "value": str(project.get("root_path", "")), "normalized": str(project.get("root_path", ""))},
+                {"name": "archive_root_path", "value": archive_root, "normalized": archive_root},
+                {"name": "phase24_summary", "value": f"Archive project '{project.get('name', '')}' to {archive_root}.", "normalized": f"Archive project '{project.get('name', '')}' to {archive_root}."},
+            ],
+            requires_approval=True,
+            risk_level="high",
+            reason="Project archival requires explicit approval.",
+        )
+        return None, archive_envelope
+
+    return None, envelope
+
+
 def _interpret_phase1(utterance: str) -> Envelope:
     """Frozen Phase 1 deterministic interpreter behavior."""
     normalized = _normalize(utterance)
@@ -1158,6 +4616,26 @@ def _interpret_phase1(utterance: str) -> Envelope:
             reason="Ambiguous input requires clarification before any route selection.",
             next_prompt="Can you clarify what outcome you want?",
         )
+
+    phase24_envelope = _parse_phase24_intent(normalized)
+    if phase24_envelope is not None:
+        return phase24_envelope
+
+    phase23_envelope = _parse_phase23_intent(normalized)
+    if phase23_envelope is not None:
+        return phase23_envelope
+
+    phase22_envelope = _parse_phase22_intent(normalized)
+    if phase22_envelope is not None:
+        return phase22_envelope
+
+    phase21_envelope = _parse_phase21_intent(normalized)
+    if phase21_envelope is not None:
+        return phase21_envelope
+
+    persist_note_envelope = _parse_persist_note_intent(normalized)
+    if persist_note_envelope is not None:
+        return persist_note_envelope
 
     filesystem_envelope = _parse_filesystem_intent(normalized)
     if filesystem_envelope is not None:
@@ -1739,6 +5217,67 @@ def set_phase5_enabled(enabled: bool) -> None:
 def set_phase8_enabled(enabled: bool) -> None:
     global _phase8_enabled
     _phase8_enabled = bool(enabled)
+
+
+def set_phase19_enabled(enabled: bool) -> None:
+    global _phase19_enabled
+    _phase19_enabled = bool(enabled)
+
+
+def set_phase20_enabled(enabled: bool) -> None:
+    global _phase20_enabled
+    _phase20_enabled = bool(enabled)
+
+
+def set_phase21_enabled(enabled: bool) -> None:
+    global _phase21_enabled
+    _phase21_enabled = bool(enabled)
+
+
+def set_phase22_enabled(enabled: bool) -> None:
+    global _phase22_enabled
+    _phase22_enabled = bool(enabled)
+
+
+def set_phase23_enabled(enabled: bool) -> None:
+    global _phase23_enabled
+    _phase23_enabled = bool(enabled)
+
+
+def set_phase24_enabled(enabled: bool) -> None:
+    global _phase24_enabled
+    _phase24_enabled = bool(enabled)
+
+
+def set_current_working_set(
+    label: str,
+    content_id: str,
+    working_type: str,
+    *,
+    source: str = "user_supplied",
+    text: str = "",
+    path: str = "",
+) -> None:
+    _phase20_set_working_set(
+        {
+            "label": _normalize(label),
+            "content_id": _normalize(content_id),
+            "type": _phase20_normalize_working_set_type(working_type),
+            "source": _normalize(source),
+            "path": _normalize(path),
+            "text": str(text),
+            "origin_turn_id": str(current_correlation_id() or ""),
+        },
+        reason="manual_set",
+    )
+
+
+def reset_current_working_set(session_id: str | None = None) -> bool:
+    return _phase20_clear_working_set(reason="manual_reset", session_id=session_id)
+
+
+def get_current_working_set(session_id: str | None = None) -> Dict[str, Any] | None:
+    return _phase20_get_working_set(session_id)
 
 
 def set_phase8_approval_mode(mode: str) -> None:
@@ -2433,12 +5972,38 @@ def reset_phase16_state() -> None:
     _capture_store.clear()
 
 
+def reset_phase20_state() -> None:
+    global _phase20_working_set_by_session
+    _phase20_working_set_by_session = {}
+
+
+def reset_phase22_state() -> None:
+    global _phase22_projects_by_id, _phase22_project_context_by_session
+    _phase22_projects_by_id = {}
+    _phase22_project_context_by_session = {}
+
+
+def reset_phase23_state() -> None:
+    global _phase23_goals_by_project_id, _phase23_tasks_by_project_id
+    _phase23_goals_by_project_id = {}
+    _phase23_tasks_by_project_id = {}
+
+
+def reset_phase24_state() -> None:
+    global _phase24_milestones_by_project_id
+    _phase24_milestones_by_project_id = {}
+
+
 def reset_phase5_state() -> None:
     global _pending_action, _execution_events
     _pending_action = None
     reset_phase8_state()
     reset_phase15_state()
     reset_phase16_state()
+    reset_phase20_state()
+    reset_phase22_state()
+    reset_phase23_state()
+    reset_phase24_state()
     _execution_events = []
     reset_phase7_memory()
     reset_observability_state()
@@ -2514,12 +6079,13 @@ def _execute_envelope_once(envelope: Envelope) -> Dict[str, Any]:
         event = execute_pending_action(action_id)
     finally:
         _pending_action = None
+    message = _phase19_persist_note_confirmation(event) or "Execution accepted and completed once."
     return {
         "type": "executed",
         "executed": True,
         "action_id": action_id,
         "execution_event": event,
-        "message": "Execution accepted and completed once.",
+        "message": message,
     }
 
 
@@ -2536,6 +6102,16 @@ def _resolve_plan_step_intent(clause: str) -> str | None:
     lowered = clause.lower()
     if "empty text file" in lowered or ("empty" in lowered and "file" in lowered):
         return "plan.create_empty_file"
+    parsed_phase24 = _parse_phase24_intent(clause)
+    if parsed_phase24 is not None:
+        parsed_intent = str(parsed_phase24.get("intent", "")).strip()
+        if parsed_intent in _PHASE24_MILESTONE_INTENTS:
+            return parsed_intent
+    parsed_phase22 = _parse_phase22_intent(clause)
+    if parsed_phase22 is not None:
+        parsed_intent = str(parsed_phase22.get("intent", "")).strip()
+        if parsed_intent in _PHASE22_PROJECT_INTENTS:
+            return parsed_intent
     parsed_filesystem = _parse_filesystem_intent(clause)
     if parsed_filesystem is not None:
         parsed_intent = str(parsed_filesystem.get("intent", "")).strip()
@@ -2667,10 +6243,18 @@ def _approval_request_message(pending: PendingAction) -> str:
     envelope = pending.envelope_snapshot
     intent = envelope.get("intent", "unknown.intent")
     risk_level = envelope.get("policy", {}).get("risk_level", "critical")
-    return (
+    message = (
         f"Pending action {pending.action_id}: intent={intent}, risk={risk_level}. "
         "To approve, reply exactly: approve"
     )
+    summary = (
+        _entity_string(envelope, "phase21_summary")
+        or _entity_string(envelope, "phase23_summary")
+        or _entity_string(envelope, "phase24_summary")
+    )
+    if summary.strip():
+        message = f"{summary} {message}"
+    return message
 
 
 def _entity_string(envelope: Envelope, name: str) -> str:
@@ -2702,6 +6286,276 @@ def _captured_text_from_envelope(envelope: Envelope) -> str:
         if isinstance(text, str) and text.strip():
             return text
     return ""
+
+
+def _phase20_captured_content_id_from_envelope(envelope: Envelope) -> str:
+    entities = envelope.get("entities", [])
+    if not isinstance(entities, list):
+        return ""
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        if str(entity.get("name", "")) != "captured_content":
+            continue
+        content_id = str(entity.get("content_id", "")).strip()
+        if content_id:
+            return content_id
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        if str(entity.get("name", "")) != "working_set_content":
+            continue
+        content_id = str(entity.get("content_id", "")).strip()
+        if content_id:
+            return content_id
+    return ""
+
+
+def _phase20_set_working_set_from_execution_event(event: Dict[str, Any]) -> None:
+    if not _phase20_enabled:
+        return
+    if not isinstance(event, dict):
+        return
+    tool_contract = event.get("tool_contract", {})
+    tool_contract = tool_contract if isinstance(tool_contract, dict) else {}
+    intent = str(tool_contract.get("intent", "")).strip()
+    if intent not in {"create_file", "write_file", "append_file"}:
+        return
+
+    envelope = event.get("envelope", {})
+    envelope = envelope if isinstance(envelope, dict) else {}
+    path = _entity_string(envelope, "path")
+    contents = _entity_string(envelope, "contents") or _captured_text_from_envelope(envelope)
+    if not path and isinstance(event.get("tool_result"), dict):
+        path = str(event.get("tool_result", {}).get("path", "")).strip()
+    label = Path(path).name if path else ""
+    content_id = _phase20_captured_content_id_from_envelope(envelope) or f"ws-{uuid.uuid4()}"
+    _phase20_set_working_set(
+        {
+            "content_id": content_id,
+            "label": label,
+            "type": _phase20_working_set_type_from_path(path) if path else _phase20_working_set_type_from_text(contents),
+            "source": "filesystem",
+            "path": path,
+            "text": contents,
+            "origin_turn_id": str(current_correlation_id() or ""),
+        },
+        reason=f"execution_{intent}",
+    )
+
+
+def _phase22_update_projects_from_execution_event(event: Dict[str, Any]) -> None:
+    if not _phase22_enabled:
+        return
+    if not isinstance(event, dict):
+        return
+    tool_contract = event.get("tool_contract", {})
+    tool_contract = tool_contract if isinstance(tool_contract, dict) else {}
+    intent = str(tool_contract.get("intent", "")).strip()
+    envelope = event.get("envelope", {})
+    envelope = envelope if isinstance(envelope, dict) else {}
+
+    if intent == "delete_project":
+        project_id = _entity_string(envelope, "project_id")
+        if project_id:
+            _phase22_projects_by_id.pop(project_id, None)
+            _phase23_goals_by_project_id.pop(project_id, None)
+            _phase23_tasks_by_project_id.pop(project_id, None)
+            _phase24_milestones_by_project_id.pop(project_id, None)
+            stale_sessions = [
+                session_id
+                for session_id, context in _phase22_project_context_by_session.items()
+                if isinstance(context, dict) and str(context.get("project_id", "")) == project_id
+            ]
+            for session_id in stale_sessions:
+                _phase22_project_context_by_session.pop(session_id, None)
+            _emit_observability_event(
+                phase="phase22",
+                event_type="project_deleted",
+                metadata={"project_id": project_id},
+            )
+        return
+
+    if intent not in _FILESYSTEM_INTENTS:
+        return
+
+    path = _entity_string(envelope, "path")
+    if not path and isinstance(event.get("tool_result"), dict):
+        path = str(event.get("tool_result", {}).get("path", "")).strip()
+    if not path:
+        return
+
+    explicit_project_id = _entity_string(envelope, "phase22_project_id")
+    project: Dict[str, Any] | None = None
+    if explicit_project_id:
+        candidate = _phase22_projects_by_id.get(explicit_project_id)
+        if isinstance(candidate, dict):
+            project = candidate
+    if project is None:
+        project = _phase22_project_for_path(path)
+    if project is None:
+        return
+
+    if intent == "delete_file":
+        _phase22_remove_artifact(project, path)
+    elif intent in {"create_file", "write_file", "append_file"}:
+        _phase22_add_or_update_artifact(project, path)
+    _phase22_update_project_timestamp(str(project.get("project_id", "")))
+
+
+def _phase23_update_tasks_from_execution_event(event: Dict[str, Any]) -> None:
+    if not _phase23_enabled:
+        return
+    if not isinstance(event, dict):
+        return
+    envelope = event.get("envelope", {})
+    envelope = envelope if isinstance(envelope, dict) else {}
+    if _entity_string(envelope, "phase23_complete_task").lower() != "true":
+        return
+
+    project_id = _entity_string(envelope, "phase23_project_id")
+    task_id = _entity_string(envelope, "phase23_task_id")
+    if not project_id or not task_id:
+        return
+
+    project = _phase22_projects_by_id.get(project_id)
+    if not isinstance(project, dict):
+        return
+    task = _phase23_task_by_id(project_id, task_id)
+    if not isinstance(task, dict):
+        return
+    if str(task.get("status", "")) == "COMPLETED":
+        return
+
+    handle_complete_task(project, task)
+    _emit_observability_event(
+        phase="phase23",
+        event_type="task_completed",
+        metadata={
+            "project_id": project_id,
+            "task_id": task_id,
+            "goal_id": _entity_string(envelope, "phase23_goal_id"),
+        },
+    )
+
+
+def _phase24_update_projects_from_execution_event(event: Dict[str, Any]) -> None:
+    if not _phase24_enabled:
+        return
+    if not isinstance(event, dict):
+        return
+    tool_contract = event.get("tool_contract", {})
+    tool_contract = tool_contract if isinstance(tool_contract, dict) else {}
+    intent = str(tool_contract.get("intent", "")).strip()
+    if intent not in {"finalize_project", "archive_project"}:
+        return
+    envelope = event.get("envelope", {})
+    envelope = envelope if isinstance(envelope, dict) else {}
+    project_id = _entity_string(envelope, "project_id")
+    if not project_id:
+        return
+    project = _phase22_projects_by_id.get(project_id)
+    if not isinstance(project, dict):
+        return
+    now = _utcnow().isoformat()
+
+    if intent == "finalize_project":
+        project["state"] = "finalized"
+        project["finalized_at"] = now
+        project["completion_confirmed"] = True
+        summary = _entity_string(envelope, "phase24_project_summary") or _phase24_project_summary_text(project)
+        captured = CapturedContent(
+            content_id=f"cc-{uuid.uuid4()}",
+            type="text_note",
+            source="phase24_finalize",
+            text=summary,
+            timestamp=now,
+            origin_turn_id=str(current_correlation_id() or ""),
+            label=f"{_phase22_slug(str(project.get('name', 'project')))}_final_summary",
+            session_id=str(current_session_id() or ""),
+        )
+        _capture_store.append(captured)
+        metadata = project.get("metadata", {})
+        metadata = metadata if isinstance(metadata, dict) else {}
+        metadata["final_summary_content_id"] = captured.content_id
+        project["metadata"] = metadata
+        project["updated_at"] = now
+        event_result = event.get("tool_result", {})
+        if isinstance(event_result, dict):
+            event_result["project_state"] = "finalized"
+            event_result["final_summary_content_id"] = captured.content_id
+        _emit_observability_event(
+            phase="phase24",
+            event_type="project_finalized",
+            metadata={"project_id": project_id, "summary_content_id": captured.content_id},
+        )
+        return
+
+    archive_root = _entity_string(envelope, "archive_root_path") or _phase24_archive_root(project)
+    root_path = str(project.get("root_path", ""))
+    root = Path(root_path).resolve(strict=False)
+    archive_dir = Path(archive_root).resolve(strict=False)
+    moved: List[str] = []
+    artifacts = project.get("artifacts", [])
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        rel = str(artifact.get("path", "")).strip()
+        if not rel:
+            continue
+        source = (root / rel).resolve(strict=False)
+        if not source.exists() or not source.is_file():
+            continue
+        destination = (archive_dir / rel).resolve(strict=False)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.move(str(source), str(destination))
+        except Exception:
+            continue
+        moved.append(rel)
+    project["state"] = "archived"
+    project["archived_at"] = now
+    project["archive_path"] = str(archive_dir)
+    project["completion_confirmed"] = True
+    project["artifacts"] = _phase22_scan_artifacts(root_path)
+    metadata = project.get("metadata", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    metadata["archived_artifacts"] = list(moved)
+    project["metadata"] = metadata
+    project["updated_at"] = now
+    event_result = event.get("tool_result", {})
+    if isinstance(event_result, dict):
+        event_result["project_state"] = "archived"
+        event_result["archive_path"] = str(archive_dir)
+        event_result["moved_files"] = list(moved)
+        event_result["moved_count"] = len(moved)
+    _emit_observability_event(
+        phase="phase24",
+        event_type="project_archived",
+        metadata={"project_id": project_id, "archive_path": str(archive_dir), "moved_count": len(moved)},
+    )
+
+
+def _phase19_persist_note_confirmation(event: Dict[str, Any]) -> str | None:
+    envelope = event.get("envelope", {})
+    if not isinstance(envelope, dict):
+        return None
+    entities = envelope.get("entities", [])
+    if not isinstance(entities, list):
+        return None
+    if not any(isinstance(entity, dict) and str(entity.get("name", "")) == "persist_note" for entity in entities):
+        return None
+
+    tool_result = event.get("tool_result", {})
+    if isinstance(tool_result, dict):
+        resolved_path = str(tool_result.get("path", "")).strip()
+        if resolved_path:
+            return f"Note persisted to {resolved_path}."
+    resolved_path = _entity_string(envelope, "path")
+    if resolved_path:
+        return f"Note persisted to {resolved_path}."
+    return "Note persisted."
 
 
 def _tool_parameters_from_envelope(contract: ToolContract, envelope: Envelope) -> Dict[str, Any]:
@@ -2837,6 +6691,10 @@ def execute_pending_action(action_id: str) -> Dict[str, Any]:
         }
         _pending_action.consumed = True
         _execution_events.append(event)
+        _phase20_set_working_set_from_execution_event(event)
+        _phase22_update_projects_from_execution_event(event)
+        _phase23_update_tasks_from_execution_event(event)
+        _phase24_update_projects_from_execution_event(event)
         _record_memory_event(
             envelope=_pending_action.envelope_snapshot,
             contract=contract,
@@ -3023,6 +6881,48 @@ def _process_user_message_phase15(utterance: str) -> Dict[str, Any] | None:
     )
     if phase16_result is not None:
         return phase16_result
+    phase19_result, envelope = _phase19_apply_to_envelope(
+        envelope=envelope,
+        normalized_utterance=routed_utterance,
+    )
+    if phase19_result is not None:
+        return phase19_result
+    phase20_result, envelope = _phase20_apply_to_envelope(
+        envelope=envelope,
+        normalized_utterance=routed_utterance,
+    )
+    if phase20_result is not None:
+        return phase20_result
+    phase21_result, envelope = _phase21_apply_to_envelope(
+        envelope=envelope,
+        normalized_utterance=routed_utterance,
+    )
+    if phase21_result is not None:
+        return phase21_result
+    phase22_result, envelope = _phase22_apply_to_envelope(
+        envelope=envelope,
+        normalized_utterance=routed_utterance,
+    )
+    if phase22_result is not None:
+        return phase22_result
+    phase23_result, envelope = _phase23_apply_to_envelope(
+        envelope=envelope,
+        normalized_utterance=routed_utterance,
+    )
+    if phase23_result is not None:
+        return phase23_result
+    phase24_result, envelope = _phase24_apply_to_envelope(
+        envelope=envelope,
+        normalized_utterance=routed_utterance,
+    )
+    if phase24_result is not None:
+        return phase24_result
+    phase24_guard_result, envelope = _phase24_apply_write_guard(
+        envelope=envelope,
+        normalized_utterance=routed_utterance,
+    )
+    if phase24_guard_result is not None:
+        return phase24_guard_result
     phase17_result, envelope = _phase17_validate_filesystem_envelope(envelope)
     if phase17_result is not None:
         return phase17_result
@@ -3246,6 +7146,48 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
         )
         if phase16_result is not None:
             return phase16_result
+        phase19_result, envelope = _phase19_apply_to_envelope(
+            envelope=envelope,
+            normalized_utterance=routed_utterance,
+        )
+        if phase19_result is not None:
+            return phase19_result
+        phase20_result, envelope = _phase20_apply_to_envelope(
+            envelope=envelope,
+            normalized_utterance=routed_utterance,
+        )
+        if phase20_result is not None:
+            return phase20_result
+        phase21_result, envelope = _phase21_apply_to_envelope(
+            envelope=envelope,
+            normalized_utterance=routed_utterance,
+        )
+        if phase21_result is not None:
+            return phase21_result
+        phase22_result, envelope = _phase22_apply_to_envelope(
+            envelope=envelope,
+            normalized_utterance=routed_utterance,
+        )
+        if phase22_result is not None:
+            return phase22_result
+        phase23_result, envelope = _phase23_apply_to_envelope(
+            envelope=envelope,
+            normalized_utterance=routed_utterance,
+        )
+        if phase23_result is not None:
+            return phase23_result
+        phase24_result, envelope = _phase24_apply_to_envelope(
+            envelope=envelope,
+            normalized_utterance=routed_utterance,
+        )
+        if phase24_result is not None:
+            return phase24_result
+        phase24_guard_result, envelope = _phase24_apply_write_guard(
+            envelope=envelope,
+            normalized_utterance=routed_utterance,
+        )
+        if phase24_guard_result is not None:
+            return phase24_guard_result
         phase17_result, envelope = _phase17_validate_filesystem_envelope(envelope)
         if phase17_result is not None:
             return phase17_result
@@ -3380,6 +7322,9 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
         }
 
     events = result["events"]
+    persist_message = ""
+    if len(events) == 1:
+        persist_message = _phase19_persist_note_confirmation(events[0]) or ""
     if _pending_plan.next_step_index >= len(_pending_plan.plan.steps):
         plan_id = _pending_plan.plan.plan_id
         _pending_plan = None
@@ -3388,7 +7333,7 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
             "executed": True,
             "plan_id": plan_id,
             "execution_events": events,
-            "message": "Plan execution completed.",
+            "message": persist_message or "Plan execution completed.",
         }
 
     _pending_plan.awaiting_next_user_turn = True
@@ -3398,7 +7343,7 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
         "plan_id": _pending_plan.plan.plan_id,
         "execution_events": events,
         "remaining_steps": len(_pending_plan.plan.steps) - _pending_plan.next_step_index,
-        "message": _plan_approval_message(_pending_plan),
+        "message": persist_message or _plan_approval_message(_pending_plan),
     }
 
 
@@ -3437,6 +7382,15 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                     "envelope": envelope,
                     "message": "",
                 }
+
+            if _phase20_enabled:
+                working_set_control = _phase20_control_response(normalized)
+                if working_set_control is not None:
+                    return working_set_control
+            if _phase22_enabled:
+                project_control = _phase22_control_response(normalized)
+                if project_control is not None:
+                    return project_control
 
             autonomy_result = _process_user_message_phase15(utterance)
             if autonomy_result is not None:
@@ -3485,6 +7439,48 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                 )
                 if phase16_result is not None:
                     return phase16_result
+                phase19_result, envelope = _phase19_apply_to_envelope(
+                    envelope=envelope,
+                    normalized_utterance=routed_utterance,
+                )
+                if phase19_result is not None:
+                    return phase19_result
+                phase20_result, envelope = _phase20_apply_to_envelope(
+                    envelope=envelope,
+                    normalized_utterance=routed_utterance,
+                )
+                if phase20_result is not None:
+                    return phase20_result
+                phase21_result, envelope = _phase21_apply_to_envelope(
+                    envelope=envelope,
+                    normalized_utterance=routed_utterance,
+                )
+                if phase21_result is not None:
+                    return phase21_result
+                phase22_result, envelope = _phase22_apply_to_envelope(
+                    envelope=envelope,
+                    normalized_utterance=routed_utterance,
+                )
+                if phase22_result is not None:
+                    return phase22_result
+                phase23_result, envelope = _phase23_apply_to_envelope(
+                    envelope=envelope,
+                    normalized_utterance=routed_utterance,
+                )
+                if phase23_result is not None:
+                    return phase23_result
+                phase24_result, envelope = _phase24_apply_to_envelope(
+                    envelope=envelope,
+                    normalized_utterance=routed_utterance,
+                )
+                if phase24_result is not None:
+                    return phase24_result
+                phase24_guard_result, envelope = _phase24_apply_write_guard(
+                    envelope=envelope,
+                    normalized_utterance=routed_utterance,
+                )
+                if phase24_guard_result is not None:
+                    return phase24_guard_result
                 phase17_result, envelope = _phase17_validate_filesystem_envelope(envelope)
                 if phase17_result is not None:
                     return phase17_result
@@ -3600,12 +7596,13 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                 }
 
             _pending_action = None
+            message = _phase19_persist_note_confirmation(event) or "Execution accepted and completed once."
             return {
                 "type": "executed",
                 "executed": True,
                 "action_id": action_id,
                 "execution_event": event,
-                "message": "Execution accepted and completed once.",
+                "message": message,
             }
         finally:
             record_latency_ms("interpreter_call_latency_ms", (time.perf_counter() - started) * 1000.0)
@@ -3683,6 +7680,8 @@ def _phase16_response_source(governed_result: Dict[str, Any]) -> str:
         return "llm"
     if result_type in {"executed", "step_executed", "plan_executed", "autonomy_executed"}:
         return "tool_result"
+    if result_type in {"content_revised", "content_transformed"}:
+        return "llm"
     return "assistant_response"
 
 

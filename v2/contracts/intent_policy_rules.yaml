@@ -47,6 +47,156 @@ rules:
     requires_approval: true
     reason: "Action-like planning request requires approval."
 
+  "PLAN::persist_note":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Composite persist_note routes to governed write_file and requires approval."
+
+  "PLAN::revise_content":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Revision generation is side-effect free until optional write-back."
+
+  "PLAN::transform_content":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Transformation generation is side-effect free until optional write-back."
+
+  "PLAN::refactor_file":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Refactor-file prepares write-back content and requires explicit approval before execution."
+
+  "PLAN::create_project":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Project creation updates session-scoped project context without filesystem side effects."
+
+  "PLAN::update_project":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Project update may compose governed filesystem writes and requires approval."
+
+  "PLAN::list_project_artifacts":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Project artifact listing is read-only introspection."
+
+  "PLAN::delete_project":
+    allowed: true
+    risk_level: high
+    requires_approval: true
+    reason: "Project deletion is metadata-destructive and requires explicit approval."
+
+  "PLAN::open_project_artifact":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Opening a project artifact is read-only."
+
+  "PLAN::project_wide_refactor":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Project-wide refactor composes governed multi-file writes with approval."
+
+  "PLAN::project_documentation_generate":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Project documentation generation is review-only output."
+
+  "PLAN::define_project_goal":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Project goal definition is advisory metadata with no side effects."
+
+  "PLAN::list_project_goals":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Project goal listing is read-only."
+
+  "PLAN::describe_project_goal":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Project goal description is read-only."
+
+  "PLAN::list_project_tasks":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Project task listing is advisory and read-only."
+
+  "PLAN::task_status":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Task status lookup is read-only."
+
+  "PLAN::propose_next_tasks":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Task proposals are advisory-only and do not execute."
+
+  "PLAN::complete_task":
+    allowed: true
+    risk_level: medium
+    requires_approval: false
+    reason: "Task completion is advisory by default; explicit approval is required when side effects are expected."
+
+  "PLAN::define_milestone":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Milestone definition is metadata-only and advisory."
+
+  "PLAN::list_milestones":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Milestone listing is read-only."
+
+  "PLAN::describe_milestone":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Milestone description is read-only."
+
+  "PLAN::achieve_milestone":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Milestone achievement is metadata-only after deterministic compliance checks."
+
+  "PLAN::project_completion_status":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Project completion checks are advisory and side-effect free."
+
+  "PLAN::finalize_project":
+    allowed: true
+    risk_level: high
+    requires_approval: true
+    reason: "Project finalization changes project mutability and requires explicit approval."
+
+  "PLAN::archive_project":
+    allowed: true
+    risk_level: high
+    requires_approval: true
+    reason: "Project archival relocates artifacts and requires explicit approval."
+
   "PLAN::create_file":
     allowed: true
     risk_level: medium

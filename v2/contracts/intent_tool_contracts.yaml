@@ -228,3 +228,90 @@ contracts:
           minLength: 1
     risk_level: "high"
     side_effects: true
+
+  - tool_name: "project.delete"
+    intent: "delete_project"
+    description: "Delete an in-session project context record (stubbed)."
+    input_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - utterance
+        - entities
+      properties:
+        utterance:
+          type: string
+        entities:
+          type: array
+    output_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - accepted
+      properties:
+        status:
+          type: string
+          const: "stubbed"
+        accepted:
+          type: boolean
+    risk_level: "high"
+    side_effects: true
+
+  - tool_name: "project.finalize"
+    intent: "finalize_project"
+    description: "Finalize a project context record and freeze project edits (stubbed)."
+    input_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - utterance
+        - entities
+      properties:
+        utterance:
+          type: string
+        entities:
+          type: array
+    output_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - accepted
+      properties:
+        status:
+          type: string
+          const: "stubbed"
+        accepted:
+          type: boolean
+    risk_level: "high"
+    side_effects: true
+
+  - tool_name: "project.archive"
+    intent: "archive_project"
+    description: "Archive project artifacts under a governed archive root (stubbed)."
+    input_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - utterance
+        - entities
+      properties:
+        utterance:
+          type: string
+        entities:
+          type: array
+    output_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - accepted
+      properties:
+        status:
+          type: string
+          const: "stubbed"
+        accepted:
+          type: boolean
+    risk_level: "high"
+    side_effects: true
