@@ -27,6 +27,7 @@
         "ENGINEER",
         "HELP",
         "CLARIFY",
+        "CONTENT_GENERATION",
         "REJECT"
       ]
     },

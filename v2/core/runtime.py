@@ -568,6 +568,15 @@ def _is_deterministic_loop_trigger(text: str) -> bool:
     return False
 
 
+def _is_plan_control_input(text: str) -> bool:
+    normalized = text.strip()
+    return (
+        normalized.upper().startswith("APPROVE PLAN ")
+        or normalized.lower() == "plan"
+        or normalized.lower().startswith("plan ")
+    )
+
+
 def _legacy_interaction_reason(text: str) -> str | None:
     normalized = text.strip()
     lowered = normalized.lower()
@@ -2839,8 +2848,7 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             user_input=user_input,
             trace_id=trace_id,
             via_ops=user_input.strip().startswith("/ops ")
-            or user_input.strip().lower().startswith("plan")
-            or user_input.strip().upper().startswith("APPROVE PLAN "),
+            or _is_plan_control_input(user_input),
         ),
     )
 
@@ -2866,8 +2874,7 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
                         user_input=user_input,
                         trace_id=trace_id,
                         via_ops=user_input.strip().startswith("/ops ")
-                        or user_input.strip().lower().startswith("plan")
-                        or user_input.strip().upper().startswith("APPROVE PLAN "),
+                        or _is_plan_control_input(user_input),
                     ),
                 )
     decision = create_node(
@@ -3301,7 +3308,7 @@ def _run_deterministic_loop(user_input: str, trace_id: str) -> dict:
             "trace_id": trace_id,
         }
 
-    if normalized_input.lower().startswith("plan"):
+    if _is_plan_control_input(normalized_input):
         if task.status != "ready":
             blocker = create_node("BLOCKER", "plan refused: task not ready", related_task_id=task.task_id)
             create_edge(blocker.node_id, decision.node_id, "blocked_by")
@@ -3525,11 +3532,9 @@ def _is_action_request(text: str) -> bool:
 
 
 def _should_use_legacy_routing(normalized_input: str) -> bool:
-    if normalized_input.upper().startswith("APPROVE PLAN "):
+    if _is_plan_control_input(normalized_input):
         return False
     if normalized_input.lower().startswith("claim:"):
-        return False
-    if normalized_input.lower().startswith("plan"):
         return False
     legacy_prefixes = (
         "/exec ",

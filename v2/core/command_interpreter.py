@@ -65,6 +65,41 @@ _ACTION_KEYWORDS = (
     "move",
     "copy",
 )
+_CONTENT_GENERATION_KEYWORDS = (
+    "generate",
+    "propose",
+    "draft",
+    "write",
+    "sketch",
+    "suggest",
+)
+_CONTENT_GENERATION_EXECUTION_TERMS = (
+    "execute",
+    "run",
+    "apply",
+    "delete",
+    "remove",
+    "rename",
+    "move",
+    "copy",
+    "append",
+    "save",
+    "register",
+    "approve",
+    "confirm",
+)
+_CONTENT_GENERATION_EXECUTION_PHRASES = (
+    "to file",
+    "from file",
+    "at path",
+    "home directory",
+    "workspace",
+    "sandbox",
+    "run tool",
+    "confirm run tool",
+    "register tool",
+    "approve tool",
+)
 _FILESYSTEM_INTENTS = {
     "create_file",
     "write_file",
@@ -85,7 +120,7 @@ _CONVERSATIONAL_PREFIXES = (
     "give me",
 )
 
-_SEMANTIC_LANES = ("CHAT", "PLAN", "HELP", "CLARIFY")
+_SEMANTIC_LANES = ("CHAT", "PLAN", "HELP", "CLARIFY", "CONTENT_GENERATION")
 _SEMANTIC_CONFIDENCE_THRESHOLD = 0.70
 _PHASE3_MAX_RETRIES = 2
 _phase3_enabled = False
@@ -397,6 +432,40 @@ def _looks_ambiguous(normalized: str) -> bool:
 def _is_action_like(normalized: str) -> bool:
     lowered = normalized.lower()
     return any(keyword in lowered for keyword in _ACTION_KEYWORDS)
+
+
+def _has_content_generation_trigger(normalized: str) -> bool:
+    lowered = normalized.lower()
+    return any(re.search(rf"\b{re.escape(keyword)}\b", lowered) for keyword in _CONTENT_GENERATION_KEYWORDS)
+
+
+def _has_content_generation_execution_signals(normalized: str) -> bool:
+    if _parse_filesystem_intent(normalized) is not None:
+        return True
+    lowered = normalized.lower()
+    if any(phrase in lowered for phrase in _CONTENT_GENERATION_EXECUTION_PHRASES):
+        return True
+    return any(re.search(rf"\b{re.escape(term)}\b", lowered) for term in _CONTENT_GENERATION_EXECUTION_TERMS)
+
+
+def _is_ambiguous_content_generation_request(normalized: str) -> bool:
+    lowered = normalized.lower()
+    return bool(
+        re.fullmatch(
+            r"(?:please\s+)?(?:generate|propose|draft|write|sketch|suggest)(?:\s+please)?",
+            lowered,
+        )
+    )
+
+
+def _content_generation_route(normalized: str) -> str:
+    if not _has_content_generation_trigger(normalized):
+        return "none"
+    if _has_content_generation_execution_signals(normalized):
+        return "none"
+    if _is_ambiguous_content_generation_request(normalized):
+        return "clarify"
+    return "content_generation"
 
 
 def _is_conversational(normalized: str) -> bool:
@@ -1097,6 +1166,32 @@ def _interpret_phase1(utterance: str) -> Envelope:
             next_prompt="",
         )
 
+    content_generation_route = _content_generation_route(normalized)
+    if content_generation_route == "content_generation":
+        return _envelope(
+            utterance=normalized,
+            lane="CONTENT_GENERATION",
+            intent="content_generation.draft",
+            confidence=0.90,
+            requires_approval=False,
+            risk_level="low",
+            allowed=True,
+            reason="Text generation request routed to content-generation mode for review-only output.",
+            next_prompt="",
+        )
+    if content_generation_route == "clarify":
+        return _envelope(
+            utterance=normalized,
+            lane="CLARIFY",
+            intent="clarify.request_context",
+            confidence=0.32,
+            requires_approval=False,
+            risk_level="low",
+            allowed=True,
+            reason="Generation request is underspecified and requires clarification before drafting content.",
+            next_prompt="What content should I draft for review?",
+        )
+
     # General deterministic fallback rules.
     if lowered.startswith("/"):
         return _envelope(
@@ -1255,6 +1350,7 @@ def _coarse_intent_for_lane(lane: Lane) -> str:
         "PLAN": "plan.user_action_request",
         "HELP": "help.guidance",
         "CLARIFY": "clarify.request_context",
+        "CONTENT_GENERATION": "content_generation.draft",
     }.get(lane, "clarify.request_context")
 
 
@@ -1276,6 +1372,9 @@ def _apply_semantic_lane(base: Envelope, lane: Lane, confidence: float) -> Envel
     elif lane == "CHAT":
         policy["risk_level"] = "low"
         policy["reason"] = "Semantic lane routing identified conversational intent."
+    elif lane == "CONTENT_GENERATION":
+        policy["risk_level"] = "low"
+        policy["reason"] = "Semantic lane routing identified content generation intent."
     else:
         policy["risk_level"] = "low"
         policy["reason"] = "Semantic lane routing requested clarification."
@@ -2365,6 +2464,20 @@ def _is_actionable_envelope(envelope: Envelope) -> bool:
     return lane == "PLAN" and (allowed or requires_approval)
 
 
+def _is_content_generation_envelope(envelope: Envelope) -> bool:
+    return str(envelope.get("lane", "")).upper() == "CONTENT_GENERATION"
+
+
+def _content_generation_result(envelope: Envelope) -> Dict[str, Any]:
+    return {
+        "type": "content_generation",
+        "executed": False,
+        "envelope": copy.deepcopy(envelope),
+        "capture_eligible": True,
+        "message": "",
+    }
+
+
 def _requires_explicit_approval(envelope: Envelope) -> bool:
     return bool(envelope.get("requires_approval", False))
 
@@ -3121,6 +3234,8 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
         if phase17_result is not None:
             return phase17_result
         if not _is_actionable_envelope(envelope):
+            if _is_content_generation_envelope(envelope):
+                return _content_generation_result(envelope)
             return {
                 "type": "no_action",
                 "executed": False,
@@ -3358,6 +3473,8 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                 if phase17_result is not None:
                     return phase17_result
                 if not _is_actionable_envelope(envelope):
+                    if _is_content_generation_envelope(envelope):
+                        return _content_generation_result(envelope)
                     return {
                         "type": "no_action",
                         "executed": False,
@@ -3519,8 +3636,13 @@ def _phase10_response_text(
     if result_type in {"approval_rejected", "approval_expired", "execution_rejected", "plan_rejected"}:
         return str(governed_result.get("message", ""))
 
+    if result_type == "content_generation":
+        responder = llm_responder or _phase10_default_freeform_response
+        text = responder(utterance, envelope)
+        return str(text) if text is not None else ""
+
     if result_type in {"no_action", "phase5_disabled"}:
-        if lane in {"CHAT", "HELP"}:
+        if lane in {"CHAT", "HELP", "CONTENT_GENERATION"}:
             responder = llm_responder or _phase10_default_freeform_response
             text = responder(utterance, envelope)
             return str(text) if text is not None else ""
@@ -3539,7 +3661,9 @@ def _phase16_response_source(governed_result: Dict[str, Any]) -> str:
     envelope = governed_result.get("envelope", {})
     envelope = envelope if isinstance(envelope, dict) else {}
     lane = str(envelope.get("lane", ""))
-    if result_type in {"no_action", "phase5_disabled"} and lane in {"CHAT", "HELP"}:
+    if result_type == "content_generation":
+        return "llm"
+    if result_type in {"no_action", "phase5_disabled"} and lane in {"CHAT", "HELP", "CONTENT_GENERATION"}:
         return "llm"
     if result_type in {"executed", "step_executed", "plan_executed", "autonomy_executed"}:
         return "tool_result"

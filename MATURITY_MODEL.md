@@ -4,7 +4,8 @@ This maturity model defines how Billy’s authority should expand over time, and
 ## 2. Introduction to Maturity Models
 Maturity models describe staged capability growth where each level adds authority only after lower-level controls are stable and measurable. For general concepts, see [maturity model](https://en.wikipedia.org/wiki/Maturity_model) and [Capability Maturity Model Integration (CMMI)](https://en.wikipedia.org/wiki/Capability_Maturity_Model_Integration).
 
-## 3. Billy’s Maturity Ladder — Levels
+## 3. Billy’s Maturity Ladder — Conceptual Levels
+Levels in this file are conceptual macro-levels. Implementation release levels and tags are defined in `MATURITY.md`.
 ### 3.1 Level 1 — Augmented Reasoning
 - Key authority boundary:
   Reasoning is allowed; state-changing action is not.
@@ -65,8 +66,13 @@ Maturity models describe staged capability growth where each level adds authorit
 - Integrity before power:
   Immutable artifacts and hash validation are prerequisites for higher-authority actions.
 
-## 5. Current Placement
-Billy currently fits **Level 4 — Structured Workflow**.
+## 5. Current Placement and Crosswalk
+Billy currently fits **Conceptual Level 4 — Structured Workflow**.
+
+Implementation crosswalk:
+- Current implementation maturity (`MATURITY.md`): **Level 18 — Content Generation Intent Class**
+- Mapping rule: implementation Levels `9` through `18` map to conceptual Level `4`
+- Conceptual Levels `5` and `6` remain future-state targets
 
 Justification:
 - Governed reasoning, drafting, approval, application, tool definition, tool approval, registration, and confirmation-gated execution are in place.

@@ -1,11 +1,12 @@
 # Billy Status Snapshot
 
 ## Current Maturity
-- Level: 10 (`Unified Conversational Governance`)
-- Latest tag: `maturity-level-10`
+- Level: 18 (`Content Generation Intent Class`)
+- Latest tag: `maturity-level-18`
+- Conceptual ladder placement (`MATURITY_MODEL.md`): Level 4 (`Structured Workflow`)
 
 ## Frozen Phases
-- Phases 1-9 are frozen infrastructure.
+- Phases 1-18 are frozen infrastructure.
 - Any behavioral change requires explicit maturity promotion and acceptance.
 
 ## Approval Contract

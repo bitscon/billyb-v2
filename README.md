@@ -4,8 +4,8 @@ Billy is a protocol-driven assistant with explicit authority boundaries.
 All user input is processed through a governed conversational pipeline.
 
 ## Current Status
-- Maturity Level: 16 (`Explicit Content Capture`)
-- Infrastructure freeze: Phases 1-16 are frozen unless explicitly promoted
+- Maturity Level: 18 (`Content Generation Intent Class`)
+- Infrastructure freeze: Phases 1-18 are frozen unless explicitly promoted
 - Conversational behavior: natural language is first-class; legacy engineer mode is deprecated
 
 ## How to Use
@@ -14,6 +14,8 @@ Use normal language. Billy routes requests through interpretation, policy, appro
 Examples:
 - `save that joke in a text file in your home directory`
 - `create an empty text file in your home directory`
+- `propose a simple HTML template for a homepage`
+- `draft an email to welcome new users`
 - `remember the last response as rome_fact`
 - `save that rome_fact in a text file in your home directory`
 
@@ -39,6 +41,11 @@ Content capture behavior:
 - Captured content is stored with `content_id`, source, timestamp, and turn correlation metadata.
 - References can use `content_id` (for example `cc-...`) or label (`that <label>`).
 - Ambiguous labels are rejected; Billy does not guess.
+
+Content generation behavior:
+- Requests to generate/draft/propose review content route to `CONTENT_GENERATION`.
+- `CONTENT_GENERATION` produces text only (no tools, no execution, no approval).
+- Generated output is eligible for explicit capture via Phase 16.
 
 ## Deprecated Inputs
 The following are informational only and do not gate behavior:
@@ -79,5 +86,7 @@ Implemented and frozen progression:
 - Phase 14: policy/contract evolution workflows (human-governed)
 - Phase 15: bounded autonomy (opt-in, scoped, revocable)
 - Phase 16: explicit content capture and reference resolution
+- Phase 17: governed filesystem collaboration with scope enforcement
+- Phase 18: content generation intent class (review-only draft output)
 
 See `MATURITY.md` for freeze policy, docs gate, and promotion state.

@@ -1,17 +1,17 @@
 Billy Maturity Snapshot (Authoritative)
 Release
 
-Tag: maturity-level-17
+Tag: maturity-level-18
 
-Status: Level 17 — Governed Filesystem Collaboration achieved
+Status: Level 18 — Content Generation Intent Class achieved
 
 Current Maturity
 
-Billy is operating at Level 17 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, and governed filesystem collaboration.
+Billy is operating at Level 18 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, and review-only content generation.
 
 Phase Summary (1–9)
 
-(unchanged — your existing section stays as-is)
+Phases 1–9 remain frozen and are summarized in `README.md` under "Maturity Snapshot".
 
 Maturity Level 9 — Approval-Gated Planning & Execution (Frozen)
 
@@ -143,6 +143,21 @@ Integration with explicit content capture for file writes
 
 Status:
 Frozen filesystem collaboration infrastructure. No shell passthrough, inferred paths, auto-approval, or out-of-scope filesystem access.
+
+Maturity Level 18 — Content Generation Intent Class (Frozen)
+
+Capabilities:
+
+Deterministic routing to `CONTENT_GENERATION` for generation/draft/propose-style requests without execution intent
+
+Review-only text generation with no side effects, no tool invocation, and no approval requirement
+
+Conversation loop remains governed with `next_state: ready_for_input`
+
+Explicit capture eligibility maintained through Phase 16 (no implicit capture)
+
+Status:
+Frozen content-generation infrastructure. It must not trigger execution, planning side effects, approvals, or contract-backed tool paths.
 
 Freeze Policy
 

@@ -23,6 +23,12 @@ rules:
     requires_approval: false
     reason: "Guidance/help requests are allowed."
 
+  "CONTENT_GENERATION::content_generation.draft":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Content generation is review-only output with no execution side effects."
+
   "CLARIFY::*":
     allowed: true
     risk_level: low

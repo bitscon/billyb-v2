@@ -7,15 +7,20 @@ Before doing work, read these files in order:
 2. `ARCHITECTURE.md`
 3. `CAPABILITIES.md`
 4. `STATE.md`
-5. `MATURITY.md`
+5. `STATUS.md`
+6. `MATURITY.md`
+7. `MATURITY_MODEL.md`
+8. `MATURITY_SYNC_CONTRACT.md`
 
-## 3. Current Operating Model (Level 16)
+## 3. Current Operating Model (Level 18)
 - Talk to Billy in normal language.
 - Billy routes every message through governed interpretation and policy.
 - Action requests do not execute immediately; Billy requests explicit approval.
 - Approval must use an allowed exact phrase.
 - Ambiguous requests route to `CLARIFY`.
 - Content must be explicitly captured before later references like `that <label>`.
+- Filesystem collaboration is governed, scope-checked, and approval-gated for mutating actions.
+- Review-only drafting requests route to `CONTENT_GENERATION` with no execution side effects.
 
 ## 4. Approval Rules (Exact)
 Allowed approval phrases (case-insensitive exact match):
@@ -59,6 +64,12 @@ User: `remember the last response as rome_fact`
 Billy: confirms captured content with an ID
 User: `save that rome_fact in a text file in your home directory`
 Billy: approval request through governed execution path
+
+### Example E: Content generation + capture
+User: `propose a simple HTML template for a homepage`
+Billy: returns HTML draft text directly (no approval)
+User: `capture this as homepage_template`
+Billy: confirms captured content with an ID
 
 ## 7. Freeze and Promotion Rule
 Phases approved as frozen infrastructure must not be tuned implicitly.

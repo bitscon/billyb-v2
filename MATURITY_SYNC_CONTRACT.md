@@ -11,8 +11,9 @@ This contract applies to all of the following layers:
 - Documentation
 
 ## 3. Single Source of Truth Rule
-`MATURITY_MODEL.md` defines maturity levels and their meanings.  
-`STATE.md` declares the current maturity placement.  
+`MATURITY.md` defines implementation maturity levels, current release tag, and freeze status.  
+`MATURITY_MODEL.md` defines conceptual maturity levels and crosswalk guidance.  
+`STATE.md` and `STATUS.md` declare current-state placement and MUST match `MATURITY.md` for implementation level/tag claims.  
 This contract enforces synchronization only and MUST NOT redefine levels or progression semantics.
 
 ## 4. Layer Maturity Declaration Requirement
@@ -23,7 +24,9 @@ Each covered layer MUST explicitly declare:
 Silence, omission, or implicit assumptions are non-compliance.
 
 ## 5. Synchronization Invariant
-No layer may operate at, expose behavior for, or claim maturity level `N` unless all upstream layers explicitly support level `N`.
+No layer may operate at, expose behavior for, or claim implementation maturity level `N` unless all upstream layers explicitly support level `N`.
+
+Conceptual maturity claims MUST include an explicit mapping to implementation maturity when both are referenced.
 
 A downstream claim without upstream support is invalid, even if partial behavior appears to function.
 
@@ -37,7 +40,7 @@ Interaction enforcement:
 - Dispatch MUST reject unsupported maturity transitions explicitly.
 
 Documentation enforcement:
-- Documentation artifacts MUST declare the maturity level they apply to.
+- Documentation artifacts MUST declare the maturity context they apply to (`implementation` or `conceptual`) whenever a level is stated.
 - Documentation that lacks or conflicts with declared maturity is non-compliant.
 
 ## 7. Maturity Promotion Rule

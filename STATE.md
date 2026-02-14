@@ -2,6 +2,7 @@
 This file is the current-state handoff for Billy v2. It is the authoritative snapshot of where work stands now, what is frozen, what is deferred, and how to resume safely after context loss.
 
 ## Current System Status
+- Declared maturity: Level 18 (`Content Generation Intent Class`), tag `maturity-level-18`.
 - All core governed modes are implemented and active in the runtime boundary model.
 - Execution power is explicitly gated; no implicit execution paths are allowed by design.
 - Code and tool actions are approval-driven, hash-validated, and confirmation-gated where required.
@@ -32,7 +33,7 @@ Frozen items must not be modified implicitly. Any change to frozen infrastructur
 These are conscious deferrals, not accidental omissions.
 
 ## Last Major Milestone
-The most recent completed milestone was TEM (Tool Execution Mode). This unlocked explicitly invoked, validated, confirmation-gated tool execution with append-only execution forensics, while preserving strict separation between registration visibility and execution authority.
+The most recent completed milestone was Level 18 (`Content Generation Intent Class`). This added deterministic routing for review-only text generation requests with no execution side effects, while preserving governed routing and explicit content capture.
 
 ## Recommended Next Directions
 - Harden contract-level schema validation for tool payload typing and side-effect declarations.
