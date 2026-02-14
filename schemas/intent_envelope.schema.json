@@ -66,7 +66,14 @@
         "archive_project",
         "delegate_to_agent",
         "list_delegation_capabilities",
-        "describe_delegation_result"
+        "describe_delegation_result",
+        "define_workflow",
+        "list_workflows",
+        "describe_workflow",
+        "preview_workflow",
+        "run_workflow",
+        "workflow_status",
+        "workflow_cancel"
       ]
     },
     "entities": {

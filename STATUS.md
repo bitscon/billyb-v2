@@ -1,8 +1,8 @@
 # Billy Status Snapshot
 
 ## Current Maturity
-- Level: 25 (`Delegation & Sub-Agent Orchestration`)
-- Intended release tag: `maturity-level-25`
+- Level: 26 (`Execution Pipelines & Repeatable Workflows`)
+- Intended release tag: `maturity-level-26`
 - Conceptual ladder placement (`MATURITY_MODEL.md`): Level 4 (`Structured Workflow`)
 
 ## Frozen Phases
@@ -15,6 +15,7 @@
 - Content capture is explicit; generation is review-only unless routed to governed execution.
 - Project lifecycle now includes goals, tasks, milestones, completion checks, finalization, and archival.
 - Delegation is governed via static capability contracts and approval-gated orchestration.
+- Workflow orchestration is project-scoped, previewable, approval-gated, and step-audited.
 
 ## Approval Contract
 Allowed approval phrases (case-insensitive exact match):

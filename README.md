@@ -4,7 +4,7 @@ Billy is a protocol-driven assistant with explicit authority boundaries.
 All user input is processed through a governed conversational pipeline.
 
 ## Current Status
-- Maturity Level: 25 (`Delegation & Sub-Agent Orchestration`)
+- Maturity Level: 26 (`Execution Pipelines & Repeatable Workflows`)
 - Infrastructure freeze: Phases 1-25 are frozen unless explicitly promoted
 - Conversational behavior: natural language is first-class; legacy engineer mode is deprecated
 
@@ -38,6 +38,11 @@ Examples:
 - `list delegation capabilities for this project`
 - `delegate creating the stylesheet to a coding agent`
 - `describe the result of the last delegation`
+- `define workflow named site_build schema {...} steps [...]`
+- `preview workflow site_build with title=Home`
+- `run workflow site_build with title=Home`
+- `workflow status`
+- `cancel current workflow`
 
 Execution flow:
 1. Billy interprets your message into an intent envelope.
@@ -117,6 +122,14 @@ Delegation behavior (Phase 25):
 - Approved delegation executes a deterministic delegated generation stub, auto-captures the delegated output, and updates the working set.
 - Delegation remains side-effect safe by default (no implicit filesystem writes, no legacy engineer execution).
 
+Execution pipelines behavior (Phase 26):
+- Billy supports workflow intents: `define_workflow`, `list_workflows`, `describe_workflow`, `preview_workflow`, `run_workflow`, `workflow_status`, `workflow_cancel`.
+- Workflows are project-scoped metadata containing ordered governed intents and parameterized step payloads.
+- `preview_workflow` is dry-run only: it resolves parameters, orders by dependencies, and reports estimated side effects with zero execution.
+- `run_workflow` requires explicit approval to start and then advances one governed step per explicit `approve`.
+- Workflow steps never bypass existing policy, approval, capture, filesystem scope, or delegation safeguards.
+- `workflow_cancel` is approval-gated and preserves partial audit history for any completed steps.
+
 ## Deprecated Inputs
 The following are informational only and do not gate behavior:
 - `/engineer`
@@ -167,5 +180,6 @@ Implemented and frozen progression:
 - Phase 23: goal-directed project execution with advisory task decomposition and governed task completion
 - Phase 24: milestone lifecycle, project completion checks, governed finalization, and governed archival
 - Phase 25: governed delegation contracts and approval-gated sub-agent orchestration with captured results
+- Phase 26: project-scoped workflow orchestration with dry-run preview, approval-gated runs, status, and cancellation
 
 See `MATURITY.md` for freeze policy, docs gate, and promotion state.

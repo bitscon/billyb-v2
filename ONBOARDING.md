@@ -1,7 +1,16 @@
 ## 1. Purpose
 This file defines how to start a new session safely in the current Billy state.
 
-## 2. Required Pre-Read (Mandatory)
+## 2. Re-Entry Instructions for Coding Assistants
+- Read `ONBOARDING.md` first.
+- Read `MATURITY.md` second.
+- Identify the highest frozen maturity level before any edits.
+- Respect all freeze boundaries for approved frozen levels.
+- Locate the latest implemented phase and treat it as the current working edge.
+- Run tests before making changes.
+- Extend maturity forward only; do not retroactively alter frozen phase behavior.
+
+## 3. Required Pre-Read (Mandatory)
 Before doing work, read these files in order:
 1. `AGENTS.md`
 2. `README.md`
@@ -14,7 +23,7 @@ Before doing work, read these files in order:
 9. `MATURITY_SYNC_CONTRACT.md`
 10. `v2/contracts/delegation_capabilities.yaml`
 
-## 3. Current Operating Model (Level 25)
+## 4. Current Operating Model (Level 26)
 - Talk to Billy in normal language.
 - Billy routes every message through governed interpretation and policy.
 - Action requests do not execute immediately; Billy requests explicit approval.
@@ -44,8 +53,12 @@ Before doing work, read these files in order:
 - Delegation scope is constrained by `v2/contracts/delegation_capabilities.yaml`.
 - Approved delegation captures generated output and updates the session working set.
 - Delegation never grants new execution authority and does not bypass governed approval.
+- Workflow intents are first-class (`define_workflow`, `list_workflows`, `describe_workflow`, `preview_workflow`, `run_workflow`, `workflow_status`, `workflow_cancel`).
+- Workflows are project-scoped metadata; preview is dry-run only and execution is approval-gated.
+- Workflow runs advance one governed step per explicit approval and preserve full audit trail.
+- Workflow cancellation is approval-gated and records partial-progress state.
 
-## 4. Approval Rules (Exact)
+## 5. Approval Rules (Exact)
 Allowed approval phrases (case-insensitive exact match):
 - `yes, proceed`
 - `approve`
@@ -58,14 +71,14 @@ Disallowed as approval:
 - `sure`
 - `sounds good`
 
-## 5. Deprecated Inputs
+## 6. Deprecated Inputs
 The following inputs are deprecated and informational only:
 - `/engineer`
 - `engineer mode`
 
 They must not block routing or execution governance.
 
-## 6. Example Conversations
+## 7. Example Conversations
 ### Example A: Natural-language action
 User: `save that joke in a text file in your home directory`
 Billy: approval request describing intent, risk, and exact approval phrase
@@ -150,11 +163,25 @@ Billy: requests approval with delegation contract summary
 User: `approve`
 Billy: executes governed delegation once, captures delegated output, and updates working set
 
-## 7. Freeze and Promotion Rule
+### Example M: Workflow orchestration
+User: `define workflow named site_build schema {"title":{"required":true}} steps [...]`
+Billy: validates and stores workflow metadata in project context (no execution)
+User: `preview workflow site_build with title=Home`
+Billy: returns ordered dry-run preview with resolved parameters and side-effect summary
+User: `run workflow site_build with title=Home`
+Billy: requests approval for workflow start
+User: `approve`
+Billy: starts workflow run
+User: `approve`
+Billy: executes next governed step and reports progress
+User: `workflow status`
+Billy: reports completed/pending steps and current state
+
+## 8. Freeze and Promotion Rule
 Phases approved as frozen infrastructure must not be tuned implicitly.
 Any behavioral change to frozen phases requires explicit promotion and acceptance.
 
-## 8. Docs Gate (Always)
+## 9. Docs Gate (Always)
 For every future phase:
 - Update `README.md` and `MATURITY.md`
 - Update onboarding docs when user-facing behavior changes

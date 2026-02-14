@@ -215,6 +215,48 @@ rules:
     requires_approval: false
     reason: "Delegation result description is read-only."
 
+  "PLAN::define_workflow":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Workflow definition is metadata-only and does not execute steps."
+
+  "PLAN::list_workflows":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Workflow listing is read-only introspection."
+
+  "PLAN::describe_workflow":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Workflow description is read-only."
+
+  "PLAN::preview_workflow":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Workflow preview is dry-run only and does not execute."
+
+  "PLAN::run_workflow":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Workflow execution requires explicit approval before starting."
+
+  "PLAN::workflow_status":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Workflow status checks are read-only."
+
+  "PLAN::workflow_cancel":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Workflow cancellation requires explicit approval."
+
   "PLAN::create_file":
     allowed: true
     risk_level: medium

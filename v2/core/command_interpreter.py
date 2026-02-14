@@ -145,6 +145,15 @@ _PHASE25_DELEGATION_INTENTS = {
     "list_delegation_capabilities",
     "describe_delegation_result",
 }
+_PHASE26_WORKFLOW_INTENTS = {
+    "define_workflow",
+    "list_workflows",
+    "describe_workflow",
+    "preview_workflow",
+    "run_workflow",
+    "workflow_status",
+    "workflow_cancel",
+}
 _PHASE20_WORKING_SET_TTL_SECONDS = 1800
 _PHASE20_IMPLICIT_REFERENCE_PHRASES = (
     "this",
@@ -258,6 +267,7 @@ _phase22_enabled = True
 _phase23_enabled = True
 _phase24_enabled = True
 _phase25_enabled = True
+_phase26_enabled = True
 _phase8_approval_mode = "step"
 
 _PHASE5_PENDING_TTL_SECONDS = 300
@@ -376,6 +386,27 @@ class DelegationContract:
 
 
 @dataclass(frozen=True)
+class WorkflowStep:
+    step_id: str
+    description: str
+    intent: str
+    parameters: Dict[str, Any]
+    depends_on: List[str]
+
+
+@dataclass(frozen=True)
+class Workflow:
+    workflow_id: str
+    project_id: str
+    name: str
+    description: str
+    parameters_schema: Dict[str, Any]
+    steps: List[WorkflowStep]
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class AutonomyScope:
     allowed_lanes: List[str]
     allowed_intents: List[str]
@@ -425,6 +456,10 @@ _phase24_milestones_by_project_id: Dict[str, List[Dict[str, Any]]] = {}
 _phase25_contracts_by_id: Dict[str, Dict[str, Any]] = {}
 _phase25_last_delegation_by_session: Dict[str, Dict[str, Any]] = {}
 _phase25_last_delegation_global: Dict[str, Any] | None = None
+_phase26_workflows_by_project_id: Dict[str, List[Dict[str, Any]]] = {}
+_phase26_runs_by_id: Dict[str, Dict[str, Any]] = {}
+_phase26_active_run_by_session: Dict[str, str] = {}
+_phase26_last_run_by_session: Dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -1256,6 +1291,397 @@ def _phase25_last_delegation(session_id: str | None = None) -> Dict[str, Any] | 
     return copy.deepcopy(record)
 
 
+def _phase26_session_key(explicit_session_id: str | None = None) -> str:
+    if explicit_session_id is not None and str(explicit_session_id).strip():
+        return str(explicit_session_id).strip()
+    return str(current_session_id() or "").strip()
+
+
+def _phase26_supported_step_intents() -> set[str]:
+    return {
+        "create_file",
+        "write_file",
+        "append_file",
+        "read_file",
+        "delete_file",
+        "content_generation.draft",
+        "capture_content",
+        "persist_note",
+        "revise_content",
+        "transform_content",
+        "refactor_file",
+        "delegate_to_agent",
+        "plan.user_action_request",
+    }
+
+
+def _phase26_parse_json_payload(raw: str) -> Dict[str, Any] | List[Any] | None:
+    text = _normalize(raw)
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    if isinstance(parsed, (dict, list)):
+        return parsed
+    return None
+
+
+def _phase26_parse_parameter_bindings(raw: str) -> Dict[str, str]:
+    text = _normalize(raw)
+    if not text:
+        return {}
+    bindings: Dict[str, str] = {}
+    for segment in text.split(","):
+        token = segment.strip()
+        if not token or "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        normalized_key = _normalize(key).strip().lower()
+        normalized_value = _strip_wrapping_quotes(value.strip())
+        if normalized_key and normalized_value:
+            bindings[normalized_key] = normalized_value
+    return bindings
+
+
+def _phase26_bind_parameter_value(value: Any, bindings: Dict[str, str]) -> Any:
+    if isinstance(value, str):
+        pattern = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_-]*)\}")
+
+        def _replace(match: re.Match[str]) -> str:
+            key = str(match.group(1)).strip().lower()
+            return str(bindings.get(key, match.group(0)))
+
+        return pattern.sub(_replace, value)
+    if isinstance(value, list):
+        return [_phase26_bind_parameter_value(item, bindings) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _phase26_bind_parameter_value(val, bindings) for key, val in value.items()}
+    return value
+
+
+def _phase26_schema_required_parameters(schema: Dict[str, Any]) -> List[str]:
+    required: List[str] = []
+    for name, config in schema.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(config, dict):
+            continue
+        if bool(config.get("required", False)):
+            required.append(name.strip().lower())
+    return sorted(set(required))
+
+
+def _phase26_known_parameter_placeholders(value: Any) -> List[str]:
+    found: List[str] = []
+    if isinstance(value, str):
+        found.extend([str(token).strip().lower() for token in re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_-]*)\}", value)])
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_phase26_known_parameter_placeholders(item))
+    elif isinstance(value, dict):
+        for item in value.values():
+            found.extend(_phase26_known_parameter_placeholders(item))
+    return sorted(set(token for token in found if token))
+
+
+def _phase26_workflows_for_project(project_id: str) -> List[Dict[str, Any]]:
+    key = str(project_id).strip()
+    if not key:
+        return []
+    if key not in _phase26_workflows_by_project_id:
+        _phase26_workflows_by_project_id[key] = []
+    return _phase26_workflows_by_project_id[key]
+
+
+def _phase26_active_run(session_id: str | None = None) -> Dict[str, Any] | None:
+    key = _phase26_session_key(session_id)
+    if not key:
+        return None
+    run_id = str(_phase26_active_run_by_session.get(key, "")).strip()
+    if not run_id:
+        return None
+    run = _phase26_runs_by_id.get(run_id)
+    if not isinstance(run, dict):
+        return None
+    return run
+
+
+def _phase26_find_run(run_id: str) -> Dict[str, Any] | None:
+    key = str(run_id).strip()
+    if not key:
+        return None
+    run = _phase26_runs_by_id.get(key)
+    if not isinstance(run, dict):
+        return None
+    return run
+
+
+def _phase26_workflow_message(workflow: Dict[str, Any]) -> str:
+    steps = workflow.get("steps", [])
+    step_count = len(steps) if isinstance(steps, list) else 0
+    return f"Workflow '{workflow.get('name', '')}' has {step_count} steps."
+
+
+def _phase26_status_message(run: Dict[str, Any]) -> str:
+    status = str(run.get("status", "UNKNOWN"))
+    workflow_name = str(run.get("workflow_name", "workflow"))
+    completed = run.get("completed_steps", [])
+    pending = run.get("pending_steps", [])
+    completed_count = len(completed) if isinstance(completed, list) else 0
+    pending_count = len(pending) if isinstance(pending, list) else 0
+    current = str(run.get("current_step_id", "")).strip()
+    if status == "RUNNING" and current:
+        return (
+            f"Workflow '{workflow_name}' is running at step '{current}'. "
+            f"Completed {completed_count}, pending {pending_count}."
+        )
+    if status == "COMPLETED":
+        return f"Workflow '{workflow_name}' completed with {completed_count} executed steps."
+    if status == "CANCELED":
+        return f"Workflow '{workflow_name}' is canceled. Completed {completed_count} steps."
+    if status == "FAILED":
+        failure = _normalize(str(run.get("failure", "")))
+        if failure:
+            return f"Workflow '{workflow_name}' failed: {failure}"
+        return f"Workflow '{workflow_name}' failed."
+    return f"Workflow '{workflow_name}' is pending approval."
+
+
+def _phase26_status_payload(run: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "workflow_status",
+        "executed": False,
+        "workflow_run": copy.deepcopy(run),
+        "message": _phase26_status_message(run),
+    }
+
+
+def _phase26_validate_schema(schema: Dict[str, Any]) -> str | None:
+    if not isinstance(schema, dict):
+        return "Workflow parameters schema must be a JSON object."
+    for key, value in schema.items():
+        if not isinstance(key, str) or not key.strip():
+            return "Workflow parameter names must be non-empty strings."
+        if not isinstance(value, dict):
+            return f"Workflow parameter '{key}' must map to an object."
+        if "required" in value and not isinstance(value.get("required"), bool):
+            return f"Workflow parameter '{key}' requires a boolean 'required' field."
+    return None
+
+
+def _phase26_validate_steps(*, steps: List[Dict[str, Any]], schema: Dict[str, Any]) -> str | None:
+    if not isinstance(steps, list) or not steps:
+        return "Workflow must include at least one step."
+
+    supported = _phase26_supported_step_intents()
+    seen: set[str] = set()
+    dependencies: Dict[str, List[str]] = {}
+    schema_keys = {str(name).strip().lower() for name in schema.keys() if isinstance(name, str) and str(name).strip()}
+    for item in steps:
+        if not isinstance(item, dict):
+            return "Workflow steps must be objects."
+        step_id = _normalize(str(item.get("step_id", "")))
+        if not step_id:
+            return "Each workflow step must include step_id."
+        if step_id in seen:
+            return f"Duplicate workflow step_id '{step_id}'."
+        seen.add(step_id)
+
+        intent = _normalize(str(item.get("intent", "")))
+        if not intent:
+            return f"Workflow step '{step_id}' is missing intent."
+        if intent not in supported:
+            return f"Workflow step '{step_id}' uses unknown intent '{intent}'."
+
+        params = item.get("parameters", {})
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            return f"Workflow step '{step_id}' parameters must be an object."
+
+        placeholders = _phase26_known_parameter_placeholders(params)
+        unknown = sorted({token for token in placeholders if token not in schema_keys})
+        if unknown:
+            return (
+                f"Workflow step '{step_id}' references unknown parameters: "
+                + ", ".join(unknown)
+                + "."
+            )
+
+        depends_on = item.get("depends_on", [])
+        if depends_on is None:
+            depends_on = []
+        if not isinstance(depends_on, list):
+            return f"Workflow step '{step_id}' depends_on must be a list."
+        dependencies[step_id] = [_normalize(str(dep)) for dep in depends_on if _normalize(str(dep))]
+
+    for step_id, deps in dependencies.items():
+        for dep in deps:
+            if dep not in seen:
+                return f"Workflow step '{step_id}' depends on unknown step '{dep}'."
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def _visit(step_id: str) -> bool:
+        if step_id in visited:
+            return True
+        if step_id in visiting:
+            return False
+        visiting.add(step_id)
+        for dep in dependencies.get(step_id, []):
+            if not _visit(dep):
+                return False
+        visiting.remove(step_id)
+        visited.add(step_id)
+        return True
+
+    for step_id in dependencies.keys():
+        if not _visit(step_id):
+            return "Workflow dependency graph contains a cycle."
+    return None
+
+
+def _phase26_order_steps(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    graph: Dict[str, List[str]] = {}
+    indegree: Dict[str, int] = {}
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for step in steps:
+        step_id = _normalize(str(step.get("step_id", "")))
+        if not step_id:
+            continue
+        deps = step.get("depends_on", [])
+        deps = deps if isinstance(deps, list) else []
+        normalized_deps = [_normalize(str(dep)) for dep in deps if _normalize(str(dep))]
+        graph[step_id] = normalized_deps
+        indegree.setdefault(step_id, 0)
+        by_id[step_id] = step
+    for step_id, deps in graph.items():
+        for dep in deps:
+            indegree.setdefault(dep, 0)
+            indegree[step_id] = indegree.get(step_id, 0) + 1
+
+    ordered: List[Dict[str, Any]] = []
+    ready = sorted([step_id for step_id, degree in indegree.items() if degree == 0])
+    while ready:
+        step_id = ready.pop(0)
+        if step_id in by_id:
+            ordered.append(by_id[step_id])
+        for candidate, deps in graph.items():
+            if step_id not in deps:
+                continue
+            indegree[candidate] = max(0, indegree.get(candidate, 0) - 1)
+            if indegree[candidate] == 0 and candidate not in ready:
+                ready.append(candidate)
+                ready.sort()
+    if len(ordered) != len(by_id):
+        return list(steps)
+    return ordered
+
+
+def _phase26_estimated_side_effects(steps: List[Dict[str, Any]]) -> List[str]:
+    effects: List[str] = []
+    for step in steps:
+        intent = _normalize(str(step.get("intent", "")))
+        if intent in _FILESYSTEM_WRITE_INTENTS:
+            effects.append(f"{intent}: filesystem mutation")
+        elif intent == "delegate_to_agent":
+            effects.append("delegate_to_agent: delegated content generation/capture")
+        elif intent in {"persist_note", "refactor_file"}:
+            effects.append(f"{intent}: may route to governed write path")
+    return effects
+
+
+def _phase26_parse_define_payload(normalized: str) -> Dict[str, Any] | None:
+    lowered = normalized.lower()
+    if not lowered.startswith("define workflow named "):
+        return None
+    remainder = _normalize(normalized[len("define workflow named "):])
+    if not remainder:
+        return {"name": "", "description": "", "schema_json": "", "steps_json": ""}
+
+    pieces = remainder.split(maxsplit=1)
+    name = _normalize(pieces[0])
+    tail = _normalize(pieces[1]) if len(pieces) > 1 else ""
+    description = ""
+    schema_json = ""
+    steps_json = ""
+
+    marker_schema = re.search(r"\bschema\b", tail, flags=re.IGNORECASE)
+    marker_steps = re.search(r"\bsteps\b", tail, flags=re.IGNORECASE)
+
+    if marker_schema is not None and marker_steps is not None:
+        if marker_schema.start() < marker_steps.start():
+            description = _normalize(tail[: marker_schema.start()])
+            schema_json = _normalize(tail[marker_schema.end() : marker_steps.start()])
+            steps_json = _normalize(tail[marker_steps.end() :])
+        else:
+            description = _normalize(tail[: marker_steps.start()])
+            steps_json = _normalize(tail[marker_steps.end() : marker_schema.start()])
+            schema_json = _normalize(tail[marker_schema.end() :])
+    elif marker_schema is not None:
+        description = _normalize(tail[: marker_schema.start()])
+        schema_json = _normalize(tail[marker_schema.end() :])
+    elif marker_steps is not None:
+        description = _normalize(tail[: marker_steps.start()])
+        steps_json = _normalize(tail[marker_steps.end() :])
+    else:
+        description = tail
+
+    if description.lower().startswith("description "):
+        description = _normalize(description[len("description "):])
+    return {
+        "name": name,
+        "description": description,
+        "schema_json": schema_json,
+        "steps_json": steps_json,
+    }
+
+
+def _phase26_workflow_by_name(project_id: str, workflow_name: str) -> Dict[str, Any] | None:
+    name = _normalize(workflow_name).lower()
+    if not name:
+        return None
+    for item in _phase26_workflows_for_project(project_id):
+        if not isinstance(item, dict):
+            continue
+        if _normalize(str(item.get("name", ""))).lower() == name:
+            return item
+    return None
+
+
+def _phase26_parse_preview_or_run_params(normalized: str) -> Dict[str, Any]:
+    match = re.search(
+        r"\b(?:preview|run)\s+workflow\s+[a-zA-Z0-9._-]+\s+with\s+(.+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return {}
+    return _phase26_parse_parameter_bindings(match.group(1))
+
+
+def _phase26_required_parameter_error(schema: Dict[str, Any], bindings: Dict[str, str]) -> str | None:
+    required = _phase26_schema_required_parameters(schema)
+    missing = [name for name in required if name not in bindings]
+    if missing:
+        return "Missing required workflow parameters: " + ", ".join(sorted(missing)) + "."
+    return None
+
+
+def _phase26_next_step_id(run: Dict[str, Any]) -> str:
+    steps = run.get("steps_ordered", [])
+    if not isinstance(steps, list):
+        return ""
+    index = int(run.get("current_step_index", 0) or 0)
+    if index < 0 or index >= len(steps):
+        return ""
+    step = steps[index]
+    return _normalize(str(step.get("step_id", "")))
+
+
 def _phase23_goals_for_project(project_id: str) -> List[Dict[str, Any]]:
     key = str(project_id).strip()
     if not key:
@@ -1989,6 +2415,8 @@ def _phase9_normalize_utterance(text: str) -> str:
     filesystem_override = _phase17_filesystem_override_for_legacy_engineer_input(normalized)
     if filesystem_override is not None:
         return filesystem_override
+    if _parse_phase26_intent(normalized) is not None:
+        return normalized
     if _parse_phase25_intent(normalized) is not None:
         return normalized
     if _parse_phase24_intent(normalized) is not None:
@@ -2608,6 +3036,138 @@ def _phase22_extract_artifact_hint(normalized: str) -> str:
     if direct is not None:
         return _strip_wrapping_quotes(direct.group(1))
     return ""
+
+
+def _phase26_extract_workflow_name(normalized: str, *, verbs: List[str]) -> str:
+    for verb in verbs:
+        pattern = rf"\b{re.escape(verb)}\s+workflow\s+([a-zA-Z0-9._-]+)\b"
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match is not None:
+            return _normalize(match.group(1))
+    return ""
+
+
+def _parse_phase26_intent(normalized: str) -> Envelope | None:
+    if not _phase26_enabled:
+        return None
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+
+    if lowered.startswith("define workflow named "):
+        payload = _phase26_parse_define_payload(normalized) or {}
+        entities = [
+            {"name": "workflow_name", "value": str(payload.get("name", "")), "normalized": str(payload.get("name", ""))},
+            {
+                "name": "workflow_description",
+                "value": str(payload.get("description", "")),
+                "normalized": str(payload.get("description", "")),
+            },
+            {
+                "name": "workflow_schema_json",
+                "value": str(payload.get("schema_json", "")),
+                "normalized": str(payload.get("schema_json", "")),
+            },
+            {
+                "name": "workflow_steps_json",
+                "value": str(payload.get("steps_json", "")),
+                "normalized": str(payload.get("steps_json", "")),
+            },
+        ]
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="define_workflow",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Workflow definitions are metadata-only.",
+        )
+
+    if re.search(r"\b(?:list|show)\s+workflows\b", lowered):
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="list_workflows",
+            entities=[],
+            requires_approval=False,
+            risk_level="low",
+            reason="Workflow listing is read-only.",
+        )
+
+    if re.search(r"\bworkflow\s+status\b", lowered) or lowered in {"status workflow", "workflow status"}:
+        name = _phase26_extract_workflow_name(normalized, verbs=["status", "describe", "show"])
+        entities: List[Dict[str, Any]] = []
+        if name:
+            entities.append({"name": "workflow_name", "value": name, "normalized": name})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="workflow_status",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Workflow status checks are read-only.",
+        )
+
+    if re.search(r"\bdescribe\s+workflow\b", lowered):
+        name = _phase26_extract_workflow_name(normalized, verbs=["describe"])
+        entities = []
+        if name:
+            entities.append({"name": "workflow_name", "value": name, "normalized": name})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="describe_workflow",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Workflow description is read-only.",
+        )
+
+    if re.search(r"\bpreview\s+workflow\b", lowered):
+        name = _phase26_extract_workflow_name(normalized, verbs=["preview"])
+        params = _phase26_parse_preview_or_run_params(normalized)
+        entities = []
+        if name:
+            entities.append({"name": "workflow_name", "value": name, "normalized": name})
+        if params:
+            encoded = json.dumps(params, ensure_ascii=True)
+            entities.append({"name": "workflow_parameters_json", "value": encoded, "normalized": encoded})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="preview_workflow",
+            entities=entities,
+            requires_approval=False,
+            risk_level="low",
+            reason="Workflow preview is dry-run only.",
+        )
+
+    if re.search(r"\brun\s+workflow\b", lowered):
+        name = _phase26_extract_workflow_name(normalized, verbs=["run"])
+        params = _phase26_parse_preview_or_run_params(normalized)
+        entities = []
+        if name:
+            entities.append({"name": "workflow_name", "value": name, "normalized": name})
+        if params:
+            encoded = json.dumps(params, ensure_ascii=True)
+            entities.append({"name": "workflow_parameters_json", "value": encoded, "normalized": encoded})
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="run_workflow",
+            entities=entities,
+            requires_approval=True,
+            risk_level="medium",
+            reason="Workflow run requires explicit approval.",
+        )
+
+    if re.search(r"\b(?:cancel\s+(?:the\s+)?(?:current\s+)?workflow|workflow\s+cancel)\b", lowered):
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="workflow_cancel",
+            entities=[],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Workflow cancellation requires explicit approval.",
+        )
+
+    return None
 
 
 def _parse_phase25_intent(normalized: str) -> Envelope | None:
@@ -4731,6 +5291,458 @@ def _phase24_apply_to_envelope(
     return None, envelope
 
 
+def _phase26_workflow_project(normalized_utterance: str) -> Dict[str, Any] | None:
+    project = _phase22_resolve_project_from_utterance(normalized_utterance)
+    if isinstance(project, dict):
+        _phase22_set_project_context(project)
+        return project
+    diagnostics = get_project_context_diagnostics()
+    maybe = diagnostics.get("project")
+    return maybe if isinstance(maybe, dict) else None
+
+
+def _phase26_step_envelope_for_execution(run: Dict[str, Any], step: Dict[str, Any]) -> Envelope:
+    run_id = str(run.get("run_id", "")).strip()
+    step_id = _normalize(str(step.get("step_id", "")))
+    intent = _normalize(str(step.get("intent", "")))
+    parameters = step.get("parameters", {})
+    parameters = parameters if isinstance(parameters, dict) else {}
+    base_entities = [
+        {"name": "phase26_run_id", "value": run_id, "normalized": run_id},
+        {"name": "phase26_step_id", "value": step_id, "normalized": step_id},
+        {"name": "phase26_step_intent", "value": intent, "normalized": intent},
+    ]
+
+    if intent in _FILESYSTEM_INTENTS:
+        location_hint = _normalize(str(parameters.get("location", ""))).lower() or "workspace"
+        raw_path = _normalize(str(parameters.get("path", "")))
+        normalized_path, path_error = _phase17_normalize_path(raw_path, location_hint=location_hint)
+        if path_error:
+            raise ValueError(path_error)
+        entities = list(base_entities)
+        entities.append({"name": "path", "value": normalized_path, "normalized": normalized_path})
+        entities.append({"name": "path_location_hint", "value": location_hint, "normalized": location_hint})
+        if intent in {"create_file", "write_file", "append_file"}:
+            contents = str(parameters.get("contents", ""))
+            entities.append({"name": "contents", "value": contents, "normalized": contents})
+        envelope = _phase17_envelope_for_intent(
+            utterance=f"workflow step {step_id}",
+            intent=intent,
+            entities=entities,
+            requires_approval=intent in _FILESYSTEM_WRITE_INTENTS,
+            risk_level="high" if intent == "delete_file" else ("medium" if intent in _FILESYSTEM_WRITE_INTENTS else "low"),
+            reason="Workflow step execution through governed filesystem contract.",
+        )
+        validation, validated_envelope = _phase17_validate_filesystem_envelope(envelope)
+        if validation is not None:
+            raise ValueError(str(validation.get("message", "Filesystem validation failed.")))
+        return validated_envelope
+
+    if intent == "delegate_to_agent":
+        agent_type = _normalize(str(parameters.get("agent_type", ""))).upper() or "CODING"
+        task = _normalize(str(parameters.get("task", ""))) or "workflow delegated task"
+        base = _phase17_envelope_for_intent(
+            utterance=f"delegate {task} to {agent_type.lower()} agent",
+            intent="delegate_to_agent",
+            entities=base_entities
+            + [
+                {"name": "delegation_agent_type", "value": agent_type, "normalized": agent_type},
+                {"name": "delegation_task", "value": task, "normalized": task},
+            ],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Workflow delegated step requires explicit approval.",
+        )
+        phase25_result, composed = _phase25_apply_to_envelope(
+            envelope=base,
+            normalized_utterance=f"delegate {task} to {agent_type.lower()} agent",
+        )
+        if phase25_result is not None:
+            raise ValueError(str(phase25_result.get("message", "Delegated step validation failed.")))
+        entities = composed.get("entities", [])
+        entities = entities if isinstance(entities, list) else []
+        composed["entities"] = entities + base_entities
+        return composed
+
+    if intent == "plan.user_action_request":
+        summary = _normalize(str(parameters.get("summary", ""))) or f"Workflow step {step_id}"
+        return _phase17_envelope_for_intent(
+            utterance=f"workflow step {step_id}",
+            intent="plan.user_action_request",
+            entities=base_entities
+            + [
+                {"name": "phase26_summary", "value": summary, "normalized": summary},
+            ],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Workflow generic step requires explicit approval.",
+        )
+
+    raise ValueError(f"Unsupported workflow step intent '{intent}'.")
+
+
+def _phase26_execute_next_step(run: Dict[str, Any]) -> Dict[str, Any]:
+    run_id = str(run.get("run_id", "")).strip()
+    workflow_name = str(run.get("workflow_name", "workflow"))
+    steps = run.get("steps_ordered", [])
+    steps = steps if isinstance(steps, list) else []
+    index = int(run.get("current_step_index", 0) or 0)
+    if index >= len(steps):
+        run["status"] = "COMPLETED"
+        run["finished_at"] = _utcnow().isoformat()
+        _phase26_active_run_by_session.pop(_phase26_session_key(), None)
+        return {
+            "type": "workflow_completed",
+            "executed": False,
+            "workflow_run": copy.deepcopy(run),
+            "message": _phase26_status_message(run),
+        }
+
+    step = steps[index]
+    step_id = _normalize(str(step.get("step_id", "")))
+    try:
+        envelope = _phase26_step_envelope_for_execution(run, step)
+        execution = _execute_envelope_once(envelope)
+    except Exception as exc:
+        run["status"] = "FAILED"
+        run["failure"] = str(exc)
+        run["finished_at"] = _utcnow().isoformat()
+        _phase26_active_run_by_session.pop(_phase26_session_key(), None)
+        return {
+            "type": "execution_rejected",
+            "executed": False,
+            "workflow_run": copy.deepcopy(run),
+            "message": f"Workflow '{workflow_name}' failed at step '{step_id}': {exc}",
+        }
+
+    updated = _phase26_find_run(run_id) or run
+    next_step_id = _phase26_next_step_id(updated)
+    message = (
+        _phase26_status_message(updated)
+        if str(updated.get("status", "")) == "COMPLETED"
+        else (
+            f"Workflow '{workflow_name}' executed step '{step_id}'. "
+            + (
+                f"Reply exactly: approve to continue with step '{next_step_id}'."
+                if next_step_id
+                else "No remaining steps."
+            )
+        )
+    )
+    payload = {
+        "type": "workflow_step_executed",
+        "executed": True,
+        "workflow_run": copy.deepcopy(updated),
+        "execution_event": execution.get("execution_event"),
+        "message": message,
+    }
+    if isinstance(execution.get("execution_event"), dict):
+        payload.update(_phase25_execution_response_fields(execution["execution_event"]))
+        payload.update(_phase26_execution_response_fields(execution["execution_event"]))
+    return payload
+
+
+def _phase26_active_run_progress_response(utterance: str) -> Dict[str, Any] | None:
+    if not _phase26_enabled:
+        return None
+    if _pending_action is not None or _pending_plan is not None:
+        return None
+    run = _phase26_active_run()
+    if not isinstance(run, dict):
+        return None
+    lowered = _normalize(utterance).lower()
+    if re.search(r"\b(?:cancel\s+(?:the\s+)?(?:current\s+)?workflow|workflow\s+cancel)\b", lowered):
+        return None
+    if re.search(r"\bworkflow\s+status\b", lowered) or lowered in {"status workflow", "workflow status"}:
+        return _phase26_status_payload(run)
+    if not _is_valid_approval_phrase(utterance):
+        next_step_id = _phase26_next_step_id(run)
+        return {
+            "type": "workflow_waiting_approval",
+            "executed": False,
+            "workflow_run": copy.deepcopy(run),
+            "message": (
+                f"Workflow '{run.get('workflow_name', 'workflow')}' is waiting for approval"
+                + (f" on step '{next_step_id}'." if next_step_id else ".")
+                + " Reply exactly: approve, or ask for workflow status."
+            ),
+        }
+    return _phase26_execute_next_step(run)
+
+
+def _phase26_apply_to_envelope(
+    *,
+    envelope: Envelope,
+    normalized_utterance: str,
+) -> tuple[Dict[str, Any] | None, Envelope]:
+    if not _phase26_enabled:
+        return None, envelope
+    intent = str(envelope.get("intent", "")).strip()
+    if intent not in _PHASE26_WORKFLOW_INTENTS:
+        return None, envelope
+
+    session_key = _phase26_session_key()
+
+    if intent == "workflow_status":
+        run = _phase26_active_run() or _phase26_find_run(_phase26_last_run_by_session.get(session_key, ""))
+        if isinstance(run, dict):
+            return _phase26_status_payload(run), envelope
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="No workflow run is active in this session.",
+        )
+
+    if intent == "workflow_cancel":
+        run = _phase26_active_run()
+        if not isinstance(run, dict):
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="No active workflow to cancel.",
+            )
+        run_id = str(run.get("run_id", ""))
+        summary = f"Cancel workflow '{run.get('workflow_name', '')}' ({run_id})."
+        composed = _phase17_envelope_for_intent(
+            utterance=normalized_utterance,
+            intent="plan.user_action_request",
+            entities=[
+                {"name": "phase26_cancel", "value": "true", "normalized": "true"},
+                {"name": "phase26_run_id", "value": run_id, "normalized": run_id},
+                {"name": "phase26_summary", "value": summary, "normalized": summary},
+            ],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Workflow cancellation requires explicit approval.",
+        )
+        return None, composed
+
+    project = _phase26_workflow_project(normalized_utterance)
+    if not isinstance(project, dict):
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="No active project. Create or select a project first.",
+        )
+    project_id = str(project.get("project_id", "")).strip()
+    workflows = _phase26_workflows_for_project(project_id)
+
+    if intent == "list_workflows":
+        listed = [copy.deepcopy(item) for item in workflows if isinstance(item, dict)]
+        names = [str(item.get("name", "")) for item in listed]
+        return {
+            "type": "workflows_list",
+            "executed": False,
+            "project": copy.deepcopy(project),
+            "workflows": listed,
+            "message": "\n".join(names) if names else "No workflows defined for this project.",
+        }, envelope
+
+    workflow_name = _entity_string(envelope, "workflow_name")
+    if not workflow_name:
+        workflow_name = _phase26_extract_workflow_name(
+            normalized_utterance,
+            verbs=["describe", "preview", "run", "status"],
+        )
+
+    if intent == "define_workflow":
+        name = _normalize(workflow_name).lower()
+        if not name:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="Provide a workflow name (for example: define workflow named site_build).",
+            )
+        description = _entity_string(envelope, "workflow_description") or f"Workflow {name}"
+        schema_json = _entity_string(envelope, "workflow_schema_json")
+        steps_json = _entity_string(envelope, "workflow_steps_json")
+
+        schema_payload = _phase26_parse_json_payload(schema_json) if schema_json else {}
+        if schema_payload is None:
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="Workflow schema must be valid JSON.",
+            )
+        schema = schema_payload if isinstance(schema_payload, dict) else {}
+        schema_error = _phase26_validate_schema(schema)
+        if schema_error:
+            return _phase19_clarify_response(utterance=normalized_utterance, message=schema_error)
+
+        steps_payload = _phase26_parse_json_payload(steps_json) if steps_json else None
+        if steps_payload is None:
+            steps = [
+                {
+                    "step_id": "step1",
+                    "description": "Delegate stylesheet draft",
+                    "intent": "delegate_to_agent",
+                    "parameters": {"agent_type": "CODING", "task": "creating the stylesheet"},
+                    "depends_on": [],
+                },
+                {
+                    "step_id": "step2",
+                    "description": "Write workflow marker file",
+                    "intent": "write_file",
+                    "parameters": {"path": "sandbox/phase26_workflow_output.txt", "contents": "phase26 workflow output"},
+                    "depends_on": ["step1"],
+                },
+            ]
+        elif not isinstance(steps_payload, list):
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="Workflow steps must be a JSON array.",
+            )
+        else:
+            steps = [item for item in steps_payload if isinstance(item, dict)]
+
+        step_error = _phase26_validate_steps(steps=steps, schema=schema)
+        if step_error:
+            return _phase19_clarify_response(utterance=normalized_utterance, message=step_error)
+
+        now = _utcnow().isoformat()
+        workflow = {
+            "workflow_id": f"wf-{uuid.uuid4()}",
+            "project_id": project_id,
+            "name": name,
+            "description": description or f"Workflow {name}",
+            "parameters_schema": copy.deepcopy(schema),
+            "steps": copy.deepcopy(steps),
+            "created_at": now,
+            "updated_at": now,
+        }
+        replaced = False
+        for index, existing in enumerate(workflows):
+            if not isinstance(existing, dict):
+                continue
+            if _normalize(str(existing.get("name", ""))).lower() == name:
+                workflow["workflow_id"] = str(existing.get("workflow_id", workflow["workflow_id"]))
+                workflow["created_at"] = str(existing.get("created_at", now))
+                workflows[index] = copy.deepcopy(workflow)
+                replaced = True
+                break
+        if not replaced:
+            workflows.append(copy.deepcopy(workflow))
+        _phase22_update_project_timestamp(project_id)
+        return {
+            "type": "workflow_defined",
+            "executed": False,
+            "project": copy.deepcopy(project),
+            "workflow": copy.deepcopy(workflow),
+            "message": (
+                f"Workflow '{name}' {'updated' if replaced else 'defined'} with {len(steps)} steps."
+            ),
+        }, envelope
+
+    workflow = _phase26_workflow_by_name(project_id, workflow_name)
+    if not isinstance(workflow, dict):
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message=f"Unknown workflow '{workflow_name or 'requested'}'.",
+        )
+
+    if intent == "describe_workflow":
+        return {
+            "type": "workflow_description",
+            "executed": False,
+            "project": copy.deepcopy(project),
+            "workflow": copy.deepcopy(workflow),
+            "message": _phase26_workflow_message(workflow),
+        }, envelope
+
+    parameters_json = _entity_string(envelope, "workflow_parameters_json")
+    parameter_bindings: Dict[str, str] = {}
+    if parameters_json:
+        parsed_params = _phase26_parse_json_payload(parameters_json)
+        if isinstance(parsed_params, dict):
+            parameter_bindings = {str(key).strip().lower(): str(value) for key, value in parsed_params.items()}
+
+    schema = workflow.get("parameters_schema", {})
+    schema = schema if isinstance(schema, dict) else {}
+    missing_error = _phase26_required_parameter_error(schema, parameter_bindings)
+    if missing_error:
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message=missing_error,
+        )
+
+    raw_steps = workflow.get("steps", [])
+    raw_steps = raw_steps if isinstance(raw_steps, list) else []
+    ordered = _phase26_order_steps(raw_steps)
+    resolved_steps: List[Dict[str, Any]] = []
+    for item in ordered:
+        if not isinstance(item, dict):
+            continue
+        resolved = copy.deepcopy(item)
+        resolved["parameters"] = _phase26_bind_parameter_value(resolved.get("parameters", {}), parameter_bindings)
+        resolved["depends_on"] = [
+            _normalize(str(dep))
+            for dep in (resolved.get("depends_on", []) if isinstance(resolved.get("depends_on", []), list) else [])
+            if _normalize(str(dep))
+        ]
+        resolved_steps.append(resolved)
+    side_effects = _phase26_estimated_side_effects(resolved_steps)
+
+    if intent == "preview_workflow":
+        lines = [f"Workflow preview: {workflow.get('name', '')}"]
+        for index, step in enumerate(resolved_steps, start=1):
+            lines.append(
+                f"{index}. {step.get('step_id', '')} -> {step.get('intent', '')} params={json.dumps(step.get('parameters', {}), ensure_ascii=True)}"
+            )
+        if side_effects:
+            lines.append("Estimated side effects:")
+            lines.extend([f"- {item}" for item in side_effects])
+        return {
+            "type": "workflow_preview",
+            "executed": False,
+            "project": copy.deepcopy(project),
+            "workflow": copy.deepcopy(workflow),
+            "preview": {"steps": resolved_steps, "side_effects": side_effects, "parameters": parameter_bindings},
+            "message": "\n".join(lines),
+        }, envelope
+
+    run_id = f"wfr-{uuid.uuid4()}"
+    now = _utcnow().isoformat()
+    run = {
+        "run_id": run_id,
+        "workflow_id": str(workflow.get("workflow_id", "")),
+        "workflow_name": str(workflow.get("name", "")),
+        "project_id": project_id,
+        "status": "PENDING_APPROVAL",
+        "current_step_index": 0,
+        "current_step_id": _normalize(str(resolved_steps[0].get("step_id", ""))) if resolved_steps else "",
+        "completed_steps": [],
+        "pending_steps": [_normalize(str(item.get("step_id", ""))) for item in resolved_steps if _normalize(str(item.get("step_id", "")))],
+        "steps_ordered": copy.deepcopy(resolved_steps),
+        "parameter_bindings": copy.deepcopy(parameter_bindings),
+        "execution_event_ids": [],
+        "side_effects": side_effects,
+        "failure": "",
+        "created_at": now,
+        "updated_at": now,
+        "started_at": "",
+        "finished_at": "",
+        "session_id": session_key,
+    }
+    _phase26_runs_by_id[run_id] = copy.deepcopy(run)
+    _phase26_last_run_by_session[session_key] = run_id
+
+    summary = (
+        f"Run workflow '{workflow.get('name', '')}' "
+        f"({len(resolved_steps)} steps, side_effects={len(side_effects)})."
+    )
+    composed = _phase17_envelope_for_intent(
+        utterance=normalized_utterance,
+        intent="plan.user_action_request",
+        entities=[
+            {"name": "phase26_run_start", "value": "true", "normalized": "true"},
+            {"name": "phase26_run_id", "value": run_id, "normalized": run_id},
+            {"name": "phase26_workflow_id", "value": str(workflow.get("workflow_id", "")), "normalized": str(workflow.get("workflow_id", ""))},
+            {"name": "phase26_workflow_name", "value": str(workflow.get("name", "")), "normalized": str(workflow.get("name", ""))},
+            {"name": "phase22_project_id", "value": project_id, "normalized": project_id},
+            {"name": "phase26_summary", "value": summary, "normalized": summary},
+        ],
+        requires_approval=True,
+        risk_level="medium",
+        reason="Workflow run requires explicit approval before execution.",
+    )
+    return None, composed
+
+
 def _invoke_delegated_agent(contract: Dict[str, Any]) -> Dict[str, Any]:
     agent_type = _normalize(str(contract.get("agent_type", ""))).upper()
     task = _normalize(str(contract.get("task_description", "")))
@@ -4950,6 +5962,10 @@ def _interpret_phase1(utterance: str) -> Envelope:
             reason="Ambiguous input requires clarification before any route selection.",
             next_prompt="Can you clarify what outcome you want?",
         )
+
+    phase26_envelope = _parse_phase26_intent(normalized)
+    if phase26_envelope is not None:
+        return phase26_envelope
 
     phase25_envelope = _parse_phase25_intent(normalized)
     if phase25_envelope is not None:
@@ -5590,6 +6606,11 @@ def set_phase24_enabled(enabled: bool) -> None:
 def set_phase25_enabled(enabled: bool) -> None:
     global _phase25_enabled
     _phase25_enabled = bool(enabled)
+
+
+def set_phase26_enabled(enabled: bool) -> None:
+    global _phase26_enabled
+    _phase26_enabled = bool(enabled)
 
 
 def set_current_working_set(
@@ -6345,6 +7366,14 @@ def reset_phase25_state() -> None:
     _phase25_capability_registry.cache_clear()
 
 
+def reset_phase26_state() -> None:
+    global _phase26_workflows_by_project_id, _phase26_runs_by_id, _phase26_active_run_by_session, _phase26_last_run_by_session
+    _phase26_workflows_by_project_id = {}
+    _phase26_runs_by_id = {}
+    _phase26_active_run_by_session = {}
+    _phase26_last_run_by_session = {}
+
+
 def reset_phase5_state() -> None:
     global _pending_action, _execution_events
     _pending_action = None
@@ -6356,6 +7385,7 @@ def reset_phase5_state() -> None:
     reset_phase23_state()
     reset_phase24_state()
     reset_phase25_state()
+    reset_phase26_state()
     _execution_events = []
     reset_phase7_memory()
     reset_observability_state()
@@ -6439,6 +7469,7 @@ def _execute_envelope_once(envelope: Envelope) -> Dict[str, Any]:
         "message": _execution_confirmation_message(event),
     }
     payload.update(_phase25_execution_response_fields(event))
+    payload.update(_phase26_execution_response_fields(event))
     return payload
 
 
@@ -6455,6 +7486,11 @@ def _resolve_plan_step_intent(clause: str) -> str | None:
     lowered = clause.lower()
     if "empty text file" in lowered or ("empty" in lowered and "file" in lowered):
         return "plan.create_empty_file"
+    parsed_phase26 = _parse_phase26_intent(clause)
+    if parsed_phase26 is not None:
+        parsed_intent = str(parsed_phase26.get("intent", "")).strip()
+        if parsed_intent in {"run_workflow", "workflow_cancel"}:
+            return "plan.user_action_request"
     parsed_phase25 = _parse_phase25_intent(clause)
     if parsed_phase25 is not None:
         parsed_intent = str(parsed_phase25.get("intent", "")).strip()
@@ -6609,6 +7645,7 @@ def _approval_request_message(pending: PendingAction) -> str:
         _entity_string(envelope, "phase21_summary")
         or _entity_string(envelope, "phase23_summary")
         or _entity_string(envelope, "phase24_summary")
+        or _entity_string(envelope, "phase26_summary")
         or _entity_string(envelope, "phase25_summary")
     )
     if summary.strip():
@@ -7016,6 +8053,129 @@ def _phase25_update_from_execution_event(event: Dict[str, Any]) -> None:
     )
 
 
+def _phase26_update_from_execution_event(event: Dict[str, Any]) -> None:
+    if not _phase26_enabled:
+        return
+    if not isinstance(event, dict):
+        return
+    envelope = event.get("envelope", {})
+    envelope = envelope if isinstance(envelope, dict) else {}
+    run_id = _entity_string(envelope, "phase26_run_id")
+    if not run_id:
+        return
+    run = _phase26_find_run(run_id)
+    if not isinstance(run, dict):
+        return
+    now = _utcnow().isoformat()
+    session_id = str(run.get("session_id", "")).strip() or _phase26_session_key()
+
+    if _entity_string(envelope, "phase26_run_start").lower() == "true":
+        run["status"] = "RUNNING"
+        run["started_at"] = run.get("started_at") or now
+        run["updated_at"] = now
+        run["current_step_index"] = 0
+        run["completed_steps"] = []
+        steps = run.get("steps_ordered", [])
+        steps = steps if isinstance(steps, list) else []
+        run["pending_steps"] = [
+            _normalize(str(item.get("step_id", "")))
+            for item in steps
+            if isinstance(item, dict) and _normalize(str(item.get("step_id", "")))
+        ]
+        run["current_step_id"] = run["pending_steps"][0] if run["pending_steps"] else ""
+        _phase26_active_run_by_session[session_id] = run_id
+        _phase26_last_run_by_session[session_id] = run_id
+        event_result = event.get("tool_result", {})
+        if isinstance(event_result, dict):
+            event_result["workflow_status"] = "RUNNING"
+            event_result["workflow_run_id"] = run_id
+        _emit_observability_event(
+            phase="phase26",
+            event_type="workflow_run_started",
+            metadata={
+                "run_id": run_id,
+                "workflow_id": str(run.get("workflow_id", "")),
+                "project_id": str(run.get("project_id", "")),
+            },
+        )
+        return
+
+    if _entity_string(envelope, "phase26_cancel").lower() == "true":
+        run["status"] = "CANCELED"
+        run["updated_at"] = now
+        run["finished_at"] = now
+        _phase26_active_run_by_session.pop(session_id, None)
+        _phase26_last_run_by_session[session_id] = run_id
+        event_result = event.get("tool_result", {})
+        if isinstance(event_result, dict):
+            event_result["workflow_status"] = "CANCELED"
+            event_result["workflow_run_id"] = run_id
+        _emit_observability_event(
+            phase="phase26",
+            event_type="workflow_run_canceled",
+            metadata={
+                "run_id": run_id,
+                "workflow_id": str(run.get("workflow_id", "")),
+                "project_id": str(run.get("project_id", "")),
+            },
+        )
+        return
+
+    if str(run.get("status", "")).strip().upper() not in {"RUNNING", "PENDING_APPROVAL"}:
+        return
+    step_id = _entity_string(envelope, "phase26_step_id")
+    if not step_id:
+        return
+    completed = run.get("completed_steps", [])
+    completed = completed if isinstance(completed, list) else []
+    if step_id not in completed:
+        completed.append(step_id)
+    run["completed_steps"] = completed
+    run["updated_at"] = now
+    execution_ids = run.get("execution_event_ids", [])
+    execution_ids = execution_ids if isinstance(execution_ids, list) else []
+    event_id = str(event.get("event_id", "")).strip()
+    if event_id:
+        execution_ids.append(event_id)
+    run["execution_event_ids"] = execution_ids
+
+    steps = run.get("steps_ordered", [])
+    steps = steps if isinstance(steps, list) else []
+    step_order = [_normalize(str(item.get("step_id", ""))) for item in steps if isinstance(item, dict)]
+    next_index = max(0, int(run.get("current_step_index", 0) or 0))
+    if step_id in step_order:
+        next_index = step_order.index(step_id) + 1
+    run["current_step_index"] = next_index
+    pending = [item for item in step_order[next_index:] if item]
+    run["pending_steps"] = pending
+    run["current_step_id"] = pending[0] if pending else ""
+    if not pending:
+        run["status"] = "COMPLETED"
+        run["finished_at"] = now
+        _phase26_active_run_by_session.pop(session_id, None)
+        _phase26_last_run_by_session[session_id] = run_id
+    else:
+        run["status"] = "RUNNING"
+        _phase26_active_run_by_session[session_id] = run_id
+
+    event_result = event.get("tool_result", {})
+    if isinstance(event_result, dict):
+        event_result["workflow_status"] = str(run.get("status", ""))
+        event_result["workflow_run_id"] = run_id
+        event_result["workflow_step_id"] = step_id
+    _emit_observability_event(
+        phase="phase26",
+        event_type="workflow_step_executed",
+        metadata={
+            "run_id": run_id,
+            "workflow_id": str(run.get("workflow_id", "")),
+            "project_id": str(run.get("project_id", "")),
+            "step_id": step_id,
+            "status": str(run.get("status", "")),
+        },
+    )
+
+
 def _phase19_persist_note_confirmation(event: Dict[str, Any]) -> str | None:
     envelope = event.get("envelope", {})
     if not isinstance(envelope, dict):
@@ -7054,6 +8214,28 @@ def _phase25_delegation_confirmation(event: Dict[str, Any]) -> str | None:
     return summary
 
 
+def _phase26_workflow_confirmation(event: Dict[str, Any]) -> str | None:
+    if not isinstance(event, dict):
+        return None
+    tool_result = event.get("tool_result", {})
+    if not isinstance(tool_result, dict):
+        return None
+    status = _normalize(str(tool_result.get("workflow_status", ""))).upper()
+    run_id = _normalize(str(tool_result.get("workflow_run_id", "")))
+    step_id = _normalize(str(tool_result.get("workflow_step_id", "")))
+    if not status and not run_id:
+        return None
+    if status == "RUNNING":
+        return f"Workflow {run_id} started. Reply exactly: approve to run the next step."
+    if status == "CANCELED":
+        return f"Workflow {run_id} canceled."
+    if status == "COMPLETED":
+        return f"Workflow {run_id} completed."
+    if step_id:
+        return f"Workflow {run_id} executed step {step_id}."
+    return f"Workflow {run_id} status: {status or 'UPDATED'}."
+
+
 def _phase25_execution_response_fields(event: Dict[str, Any]) -> Dict[str, Any]:
     tool_result = event.get("tool_result", {})
     if not isinstance(tool_result, dict):
@@ -7070,9 +8252,26 @@ def _phase25_execution_response_fields(event: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _phase26_execution_response_fields(event: Dict[str, Any]) -> Dict[str, Any]:
+    tool_result = event.get("tool_result", {})
+    if not isinstance(tool_result, dict):
+        return {}
+    payload: Dict[str, Any] = {}
+    for source_key, target_key in (
+        ("workflow_run_id", "workflow_run_id"),
+        ("workflow_status", "workflow_status"),
+        ("workflow_step_id", "workflow_step_id"),
+    ):
+        value = tool_result.get(source_key)
+        if isinstance(value, str) and value.strip():
+            payload[target_key] = value
+    return payload
+
+
 def _execution_confirmation_message(event: Dict[str, Any]) -> str:
     return (
         _phase19_persist_note_confirmation(event)
+        or _phase26_workflow_confirmation(event)
         or _phase25_delegation_confirmation(event)
         or "Execution accepted and completed once."
     )
@@ -7216,6 +8415,7 @@ def execute_pending_action(action_id: str) -> Dict[str, Any]:
         _phase23_update_tasks_from_execution_event(event)
         _phase24_update_projects_from_execution_event(event)
         _phase25_update_from_execution_event(event)
+        _phase26_update_from_execution_event(event)
         _record_memory_event(
             envelope=_pending_action.envelope_snapshot,
             contract=contract,
@@ -7438,6 +8638,12 @@ def _process_user_message_phase15(utterance: str) -> Dict[str, Any] | None:
     )
     if phase24_result is not None:
         return phase24_result
+    phase26_result, envelope = _phase26_apply_to_envelope(
+        envelope=envelope,
+        normalized_utterance=routed_utterance,
+    )
+    if phase26_result is not None:
+        return phase26_result
     phase25_result, envelope = _phase25_apply_to_envelope(
         envelope=envelope,
         normalized_utterance=routed_utterance,
@@ -7709,6 +8915,12 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
         )
         if phase24_result is not None:
             return phase24_result
+        phase26_result, envelope = _phase26_apply_to_envelope(
+            envelope=envelope,
+            normalized_utterance=routed_utterance,
+        )
+        if phase26_result is not None:
+            return phase26_result
         phase25_result, envelope = _phase25_apply_to_envelope(
             envelope=envelope,
             normalized_utterance=routed_utterance,
@@ -7924,6 +9136,10 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                 project_control = _phase22_control_response(normalized)
                 if project_control is not None:
                     return project_control
+            if _phase26_enabled:
+                workflow_progress = _phase26_active_run_progress_response(normalized)
+                if workflow_progress is not None:
+                    return workflow_progress
 
             autonomy_result = _process_user_message_phase15(utterance)
             if autonomy_result is not None:
@@ -8008,6 +9224,12 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                 )
                 if phase24_result is not None:
                     return phase24_result
+                phase26_result, envelope = _phase26_apply_to_envelope(
+                    envelope=envelope,
+                    normalized_utterance=routed_utterance,
+                )
+                if phase26_result is not None:
+                    return phase26_result
                 phase25_result, envelope = _phase25_apply_to_envelope(
                     envelope=envelope,
                     normalized_utterance=routed_utterance,
@@ -8100,6 +9322,14 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                     "message": "Approval rejected: approval window closed. Re-submit the action request.",
                 }
 
+            if _phase26_enabled and _entity_string(_pending_action.envelope_snapshot, "phase26_run_start").lower() == "true":
+                status_probe = _parse_phase26_intent(normalized)
+                if isinstance(status_probe, dict) and str(status_probe.get("intent", "")) == "workflow_status":
+                    run_id = _entity_string(_pending_action.envelope_snapshot, "phase26_run_id")
+                    run = _phase26_find_run(run_id)
+                    if isinstance(run, dict):
+                        return _phase26_status_payload(run)
+
             _pending_action.awaiting_next_user_turn = False
             if not _is_valid_approval_phrase(normalized):
                 _emit_observability_event(
@@ -8143,6 +9373,7 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                 "message": _execution_confirmation_message(event),
             }
             payload.update(_phase25_execution_response_fields(event))
+            payload.update(_phase26_execution_response_fields(event))
             return payload
         finally:
             record_latency_ms("interpreter_call_latency_ms", (time.perf_counter() - started) * 1000.0)

@@ -3,11 +3,14 @@ Release
 
 Tag: maturity-level-25
 
-Status: Level 25 — Delegation & Sub-Agent Orchestration frozen
+Status: Level 26 — Execution Pipelines & Repeatable Workflows draft/in progress (not frozen)
 
 Current Maturity
 
-Billy is operating at Level 25 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, and governed delegation/sub-agent orchestration contracts.
+Billy is operating at Level 26 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, governed delegation/sub-agent orchestration contracts, and project-scoped repeatable workflow orchestration.
+
+Current Working Edge:
+Level 26 is the active draft/in-progress edge. Levels 1-25 remain frozen.
 
 Phase Summary (1–9)
 
@@ -278,6 +281,23 @@ Session diagnostics for last delegation result and strict CLARIFY fallback for u
 
 Status:
 Frozen delegation infrastructure. Delegated agents remain tool-scoped and non-authoritative, with no bypass of policy, approval, execution, filesystem scope, or legacy engineer boundaries.
+
+Maturity Level 26 — Execution Pipelines & Repeatable Workflows (Draft / In Progress)
+
+Capabilities:
+
+Project-scoped workflow lifecycle intents (`define_workflow`, `list_workflows`, `describe_workflow`, `preview_workflow`, `run_workflow`, `workflow_status`, `workflow_cancel`)
+
+Deterministic workflow definition validation for supported governed intents, parameter placeholders, and cycle-free dependencies
+
+Dry-run workflow preview with ordered steps, resolved parameter bindings, and explicit side-effect summaries
+
+Approval-gated workflow run start followed by explicit approval-driven step execution through existing governed intent/tool pathways
+
+Workflow run status/cancellation semantics with auditable partial progress and preserved execution history
+
+Status:
+Draft/in-progress and not frozen. Workflow orchestration remains constrained to existing policy, approval, execution, and scope boundaries with no new authority paths.
 
 Freeze Policy
 
