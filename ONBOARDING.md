@@ -12,8 +12,9 @@ Before doing work, read these files in order:
 7. `MATURITY.md`
 8. `MATURITY_MODEL.md`
 9. `MATURITY_SYNC_CONTRACT.md`
+10. `v2/contracts/delegation_capabilities.yaml`
 
-## 3. Current Operating Model (Level 24)
+## 3. Current Operating Model (Level 25)
 - Talk to Billy in normal language.
 - Billy routes every message through governed interpretation and policy.
 - Action requests do not execute immediately; Billy requests explicit approval.
@@ -39,6 +40,10 @@ Before doing work, read these files in order:
 - Project completion checks are advisory (`project_completion_status`) and deterministic over milestones/goals/tasks.
 - `finalize_project` and `archive_project` are approval-gated lifecycle actions.
 - Finalized/archived projects are read-only for artifact writes unless explicitly reactivated/cloned.
+- Delegation intents are first-class (`delegate_to_agent`, `list_delegation_capabilities`, `describe_delegation_result`).
+- Delegation scope is constrained by `v2/contracts/delegation_capabilities.yaml`.
+- Approved delegation captures generated output and updates the session working set.
+- Delegation never grants new execution authority and does not bypass governed approval.
 
 ## 4. Approval Rules (Exact)
 Allowed approval phrases (case-insensitive exact match):
@@ -136,6 +141,14 @@ User: `finalize the project`
 Billy: requests approval, then freezes project to read-only on approval
 User: `archive the project`
 Billy: requests approval, then relocates project artifacts to governed archive storage
+
+### Example L: Delegation with approval
+User: `list delegation capabilities for this project`
+Billy: returns available specialist agent types and their allowed tools
+User: `delegate creating the stylesheet to a coding agent`
+Billy: requests approval with delegation contract summary
+User: `approve`
+Billy: executes governed delegation once, captures delegated output, and updates working set
 
 ## 7. Freeze and Promotion Rule
 Phases approved as frozen infrastructure must not be tuned implicitly.

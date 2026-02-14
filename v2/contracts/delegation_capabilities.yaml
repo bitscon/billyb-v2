@@ -1,0 +1,23 @@
+delegation_capabilities:
+  - agent_type: CODING
+    allowed_tools:
+      - filesystem.write_file
+      - transform_content
+      - revise_content
+    description: "Generate and modify code artifacts"
+
+  - agent_type: REFACTORING
+    allowed_tools:
+      - revise_content
+      - transform_content
+    description: "Refactor existing artifacts"
+
+  - agent_type: DOCUMENTATION
+    allowed_tools:
+      - content_generation
+    description: "Generate natural language documentation"
+
+  - agent_type: TRANSFORMATION
+    allowed_tools:
+      - transform_content
+    description: "Apply transformations to existing content"

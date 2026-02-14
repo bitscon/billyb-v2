@@ -197,6 +197,24 @@ rules:
     requires_approval: true
     reason: "Project archival relocates artifacts and requires explicit approval."
 
+  "PLAN::delegate_to_agent":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Delegation orchestration requires explicit approval and must remain governed."
+
+  "PLAN::list_delegation_capabilities":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Delegation capability listing is read-only introspection."
+
+  "PLAN::describe_delegation_result":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Delegation result description is read-only."
+
   "PLAN::create_file":
     allowed: true
     risk_level: medium

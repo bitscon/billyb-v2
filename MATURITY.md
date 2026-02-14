@@ -1,13 +1,13 @@
 Billy Maturity Snapshot (Authoritative)
 Release
 
-Tag: maturity-level-24
+Tag: maturity-level-25
 
-Status: Level 24 — Milestones & Completion Semantics achieved
+Status: Level 25 — Delegation & Sub-Agent Orchestration frozen
 
 Current Maturity
 
-Billy is operating at Level 24 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, and project milestone/finalization/archive lifecycle controls.
+Billy is operating at Level 25 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, and governed delegation/sub-agent orchestration contracts.
 
 Phase Summary (1–9)
 
@@ -262,6 +262,23 @@ Approval-gated `archive_project` operation that relocates artifacts under govern
 Status:
 Frozen project-lifecycle-closure infrastructure. Milestone/completion/finalize/archive semantics remain governed, approval-bound, and non-authoritative outside explicit approved execution.
 
+Maturity Level 25 — Delegation & Sub-Agent Orchestration (Frozen)
+
+Capabilities:
+
+First-class delegation intents (`delegate_to_agent`, `list_delegation_capabilities`, `describe_delegation_result`)
+
+Static delegation capability contracts (`v2/contracts/delegation_capabilities.yaml`) enforcing `agent_type` and allowed-tool scope
+
+Approval-gated delegation orchestration routed through governed `plan.user_action_request`
+
+Deterministic delegated output generation, explicit capture of delegated result artifacts, and working-set promotion
+
+Session diagnostics for last delegation result and strict CLARIFY fallback for unknown/forbidden delegation requests
+
+Status:
+Frozen delegation infrastructure. Delegated agents remain tool-scoped and non-authoritative, with no bypass of policy, approval, execution, filesystem scope, or legacy engineer boundaries.
+
 Freeze Policy
 
 Once a phase is approved and frozen:
@@ -291,3 +308,6 @@ Deterministic policy rules keyed by lane::intent
 
 v2/contracts/intent_tool_contracts.yaml
 Static intent-to-tool contract mapping used by governed execution
+
+v2/contracts/delegation_capabilities.yaml
+Static delegation capability registry used to validate specialist delegation scope

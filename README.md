@@ -4,8 +4,8 @@ Billy is a protocol-driven assistant with explicit authority boundaries.
 All user input is processed through a governed conversational pipeline.
 
 ## Current Status
-- Maturity Level: 24 (`Milestones & Completion Semantics`)
-- Infrastructure freeze: Phases 1-24 are frozen unless explicitly promoted
+- Maturity Level: 25 (`Delegation & Sub-Agent Orchestration`)
+- Infrastructure freeze: Phases 1-25 are frozen unless explicitly promoted
 - Conversational behavior: natural language is first-class; legacy engineer mode is deprecated
 
 ## How to Use
@@ -35,6 +35,9 @@ Examples:
 - `is this project complete?`
 - `finalize the project`
 - `archive the project`
+- `list delegation capabilities for this project`
+- `delegate creating the stylesheet to a coding agent`
+- `describe the result of the last delegation`
 
 Execution flow:
 1. Billy interprets your message into an intent envelope.
@@ -107,6 +110,13 @@ Milestones and completion semantics (Phase 24):
 - `archive_project` is approval-gated and relocates project artifacts under a governed archive namespace.
 - After finalization/archival, writes to project artifacts are blocked until explicit reactivation/cloning workflows are introduced.
 
+Delegation behavior (Phase 25):
+- Billy supports delegation intents: `delegate_to_agent`, `list_delegation_capabilities`, `describe_delegation_result`.
+- Delegation capability scope is contract-defined in `v2/contracts/delegation_capabilities.yaml` (`agent_type` + allowed tools).
+- Delegation requests are approval-gated and execute through governed `plan.user_action_request`; no direct authority is granted to sub-agents.
+- Approved delegation executes a deterministic delegated generation stub, auto-captures the delegated output, and updates the working set.
+- Delegation remains side-effect safe by default (no implicit filesystem writes, no legacy engineer execution).
+
 ## Deprecated Inputs
 The following are informational only and do not gate behavior:
 - `/engineer`
@@ -127,6 +137,8 @@ Billy responds with a deprecation note and continues governed routing normally.
   Deterministic policy map by `lane::intent` used for allow/deny, risk, and approval requirements.
 - `v2/contracts/intent_tool_contracts.yaml`
   Static intent-to-tool contract registry used for contract-bound (stubbed) execution.
+- `v2/contracts/delegation_capabilities.yaml`
+  Static sub-agent capability map (`agent_type`, `allowed_tools`) used to validate governed delegation scope.
 
 ## Maturity Snapshot
 Implemented and frozen progression:
@@ -154,5 +166,6 @@ Implemented and frozen progression:
 - Phase 22: project-scoped context and governed multi-artifact coordination
 - Phase 23: goal-directed project execution with advisory task decomposition and governed task completion
 - Phase 24: milestone lifecycle, project completion checks, governed finalization, and governed archival
+- Phase 25: governed delegation contracts and approval-gated sub-agent orchestration with captured results
 
 See `MATURITY.md` for freeze policy, docs gate, and promotion state.

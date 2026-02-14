@@ -63,7 +63,10 @@
         "achieve_milestone",
         "project_completion_status",
         "finalize_project",
-        "archive_project"
+        "archive_project",
+        "delegate_to_agent",
+        "list_delegation_capabilities",
+        "describe_delegation_result"
       ]
     },
     "entities": {

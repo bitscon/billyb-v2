@@ -1,12 +1,12 @@
 # Billy Status Snapshot
 
 ## Current Maturity
-- Level: 24 (`Milestones & Completion Semantics`)
-- Intended release tag: `maturity-level-24`
+- Level: 25 (`Delegation & Sub-Agent Orchestration`)
+- Intended release tag: `maturity-level-25`
 - Conceptual ladder placement (`MATURITY_MODEL.md`): Level 4 (`Structured Workflow`)
 
 ## Frozen Phases
-- Phases 1-24 are frozen infrastructure.
+- Phases 1-25 are frozen infrastructure.
 - Any behavioral change requires explicit maturity promotion and acceptance.
 
 ## Current Governance Posture
@@ -14,6 +14,7 @@
 - Mutating actions remain approval-gated with exact approval phrases.
 - Content capture is explicit; generation is review-only unless routed to governed execution.
 - Project lifecycle now includes goals, tasks, milestones, completion checks, finalization, and archival.
+- Delegation is governed via static capability contracts and approval-gated orchestration.
 
 ## Approval Contract
 Allowed approval phrases (case-insensitive exact match):
@@ -37,3 +38,4 @@ Before code changes, execute the onboarding pre-read in `ONBOARDING.md` (which n
 ## Contracts Index
 - `v2/contracts/intent_policy_rules.yaml`
 - `v2/contracts/intent_tool_contracts.yaml`
+- `v2/contracts/delegation_capabilities.yaml`

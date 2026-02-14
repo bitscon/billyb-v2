@@ -140,6 +140,11 @@ _PHASE24_MILESTONE_INTENTS = {
     "finalize_project",
     "archive_project",
 }
+_PHASE25_DELEGATION_INTENTS = {
+    "delegate_to_agent",
+    "list_delegation_capabilities",
+    "describe_delegation_result",
+}
 _PHASE20_WORKING_SET_TTL_SECONDS = 1800
 _PHASE20_IMPLICIT_REFERENCE_PHRASES = (
     "this",
@@ -252,6 +257,7 @@ _phase21_enabled = True
 _phase22_enabled = True
 _phase23_enabled = True
 _phase24_enabled = True
+_phase25_enabled = True
 _phase8_approval_mode = "step"
 
 _PHASE5_PENDING_TTL_SECONDS = 300
@@ -358,6 +364,18 @@ class ProjectMilestone:
 
 
 @dataclass(frozen=True)
+class DelegationContract:
+    delegation_id: str
+    agent_type: str
+    task_description: str
+    allowed_tools: List[str]
+    requested_tool: str
+    project_id: str
+    project_name: str
+    created_at: str
+
+
+@dataclass(frozen=True)
 class AutonomyScope:
     allowed_lanes: List[str]
     allowed_intents: List[str]
@@ -404,6 +422,9 @@ _phase22_project_context_by_session: Dict[str, Dict[str, Any]] = {}
 _phase23_goals_by_project_id: Dict[str, List[Dict[str, Any]]] = {}
 _phase23_tasks_by_project_id: Dict[str, List[Dict[str, Any]]] = {}
 _phase24_milestones_by_project_id: Dict[str, List[Dict[str, Any]]] = {}
+_phase25_contracts_by_id: Dict[str, Dict[str, Any]] = {}
+_phase25_last_delegation_by_session: Dict[str, Dict[str, Any]] = {}
+_phase25_last_delegation_global: Dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -1109,6 +1130,130 @@ def _phase22_control_response(text: str) -> Dict[str, Any] | None:
         "next_steps": next_steps,
         "message": " ".join(next_steps),
     }
+
+
+def _phase25_session_key(explicit_session_id: str | None = None) -> str:
+    if explicit_session_id is not None and str(explicit_session_id).strip():
+        return str(explicit_session_id).strip()
+    return str(current_session_id() or "").strip()
+
+
+@lru_cache(maxsize=1)
+def _phase25_capability_registry() -> Dict[str, Dict[str, Any]]:
+    path = Path(__file__).resolve().parents[1] / "contracts" / "delegation_capabilities.yaml"
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        payload = {}
+    entries = payload.get("delegation_capabilities", [])
+    entries = entries if isinstance(entries, list) else []
+    registry: Dict[str, Dict[str, Any]] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        agent_type = _normalize(str(item.get("agent_type", ""))).upper()
+        if not agent_type:
+            continue
+        allowed_tools = item.get("allowed_tools", [])
+        allowed_tools = allowed_tools if isinstance(allowed_tools, list) else []
+        normalized_tools = sorted({_normalize(str(tool)) for tool in allowed_tools if _normalize(str(tool))})
+        registry[agent_type] = {
+            "agent_type": agent_type,
+            "allowed_tools": normalized_tools,
+            "description": _normalize(str(item.get("description", ""))),
+        }
+    return registry
+
+
+def _phase25_capabilities_list() -> List[Dict[str, Any]]:
+    return [copy.deepcopy(value) for _, value in sorted(_phase25_capability_registry().items())]
+
+
+def _phase25_contract_to_dict(contract: DelegationContract) -> Dict[str, Any]:
+    return {
+        "delegation_id": contract.delegation_id,
+        "agent_type": contract.agent_type,
+        "task_description": contract.task_description,
+        "allowed_tools": list(contract.allowed_tools),
+        "requested_tool": contract.requested_tool,
+        "project_id": contract.project_id,
+        "project_name": contract.project_name,
+        "created_at": contract.created_at,
+    }
+
+
+def _phase25_requested_tool(task_description: str) -> str:
+    lowered = _normalize(task_description).lower()
+    if any(token in lowered for token in ("delete", "remove", "unlink")):
+        return "filesystem.delete_file"
+    if any(token in lowered for token in ("refactor", "revise", "rewrite")):
+        return "revise_content"
+    if any(token in lowered for token in ("transform", "convert", "uppercase", "lowercase", "format")):
+        return "transform_content"
+    if any(token in lowered for token in ("code", "stylesheet", "css", "module", "file", "snippet", "write", "create")):
+        return "filesystem.write_file"
+    return "content_generation"
+
+
+def _phase25_extract_agent_type(text: str) -> str:
+    normalized = _normalize(text)
+    direct = re.search(r"\bto\s+(?:a\s+)?([a-zA-Z_][a-zA-Z0-9_-]*)\s+agent\b", normalized, flags=re.IGNORECASE)
+    if direct is not None:
+        return _normalize(direct.group(1)).upper()
+    named = re.search(r"\bagent\s+type\s+([a-zA-Z_][a-zA-Z0-9_-]*)\b", normalized, flags=re.IGNORECASE)
+    if named is not None:
+        return _normalize(named.group(1)).upper()
+    return ""
+
+
+def _phase25_extract_task(text: str) -> str:
+    normalized = _normalize(text)
+    quoted = re.search(r"'([^']+)'|\"([^\"]+)\"", normalized)
+    if quoted is not None:
+        token = quoted.group(1) if quoted.group(1) is not None else quoted.group(2)
+        return _normalize(str(token))
+    match = re.search(
+        r"\bdelegate\b(?:\s+(?:the\s+)?task(?:\s+of)?|\s+)?\s*(?P<task>.+?)\s+to\s+(?:a\s+)?[a-zA-Z_][a-zA-Z0-9_-]*\s+agent\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if match is not None:
+        return _normalize(str(match.group("task")))
+    if normalized.lower().startswith("delegate "):
+        return _normalize(normalized[len("delegate "):])
+    return ""
+
+
+def _phase25_parse_contract_json(raw: str) -> Dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _phase25_result_message(record: Dict[str, Any]) -> str:
+    delegation_id = str(record.get("delegation_id", ""))
+    agent_type = str(record.get("agent_type", ""))
+    summary = _normalize(str(record.get("result_summary", "")))
+    if summary:
+        return f"Delegation result {delegation_id} ({agent_type}): {summary}"
+    return f"Delegation result {delegation_id} ({agent_type}) is available."
+
+
+def _phase25_last_delegation(session_id: str | None = None) -> Dict[str, Any] | None:
+    global _phase25_last_delegation_global
+    key = _phase25_session_key(session_id)
+    record = _phase25_last_delegation_by_session.get(key) if key else None
+    if not isinstance(record, dict):
+        if not isinstance(_phase25_last_delegation_global, dict):
+            return None
+        return copy.deepcopy(_phase25_last_delegation_global)
+    return copy.deepcopy(record)
 
 
 def _phase23_goals_for_project(project_id: str) -> List[Dict[str, Any]]:
@@ -1844,6 +1989,8 @@ def _phase9_normalize_utterance(text: str) -> str:
     filesystem_override = _phase17_filesystem_override_for_legacy_engineer_input(normalized)
     if filesystem_override is not None:
         return filesystem_override
+    if _parse_phase25_intent(normalized) is not None:
+        return normalized
     if _parse_phase24_intent(normalized) is not None:
         return normalized
     if _parse_phase23_intent(normalized) is not None:
@@ -2461,6 +2608,55 @@ def _phase22_extract_artifact_hint(normalized: str) -> str:
     if direct is not None:
         return _strip_wrapping_quotes(direct.group(1))
     return ""
+
+
+def _parse_phase25_intent(normalized: str) -> Envelope | None:
+    if not _phase25_enabled:
+        return None
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+
+    if re.search(r"\b(?:list|show|what are)\s+delegation\s+capabilities\b", lowered):
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="list_delegation_capabilities",
+            entities=[],
+            requires_approval=False,
+            risk_level="low",
+            reason="Delegation capability listing is read-only.",
+        )
+
+    if re.search(r"\bdescribe\s+(?:the\s+)?result\s+of\s+(?:the\s+)?last\s+delegation\b", lowered) or re.search(
+        r"\bdescribe\s+(?:the\s+)?last\s+delegation\s+result\b",
+        lowered,
+    ):
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="describe_delegation_result",
+            entities=[],
+            requires_approval=False,
+            risk_level="low",
+            reason="Delegation result description is read-only.",
+        )
+
+    if "delegate" not in lowered:
+        return None
+    agent_type = _phase25_extract_agent_type(normalized)
+    task = _phase25_extract_task(normalized)
+    entities: List[Dict[str, Any]] = []
+    if agent_type:
+        entities.append({"name": "delegation_agent_type", "value": agent_type, "normalized": agent_type})
+    if task:
+        entities.append({"name": "delegation_task", "value": task, "normalized": task})
+    return _phase17_envelope_for_intent(
+        utterance=normalized,
+        intent="delegate_to_agent",
+        entities=entities,
+        requires_approval=True,
+        risk_level="medium",
+        reason="Delegation orchestration requires explicit approval before sub-agent execution.",
+    )
 
 
 def _phase24_extract_milestone_definition(normalized: str) -> Dict[str, Any] | None:
@@ -4535,6 +4731,144 @@ def _phase24_apply_to_envelope(
     return None, envelope
 
 
+def _invoke_delegated_agent(contract: Dict[str, Any]) -> Dict[str, Any]:
+    agent_type = _normalize(str(contract.get("agent_type", ""))).upper()
+    task = _normalize(str(contract.get("task_description", "")))
+    requested_tool = _normalize(str(contract.get("requested_tool", "")))
+    lowered = task.lower()
+
+    if "stylesheet" in lowered or " css" in lowered or lowered.endswith("css"):
+        result_text = "/* delegated stylesheet draft */\nbody { margin: 0; font-family: sans-serif; }\n"
+    elif "navigation" in lowered or "nav" in lowered:
+        result_text = "<nav><a href=\"/\">Home</a> <a href=\"/about\">About</a></nav>\n"
+    elif requested_tool == "transform_content":
+        result_text = f"Transformed delegation output for task: {task}"
+    elif requested_tool == "revise_content":
+        result_text = f"Revised delegation output for task: {task}"
+    elif requested_tool == "content_generation":
+        result_text = f"{agent_type} draft:\n{task}"
+    else:
+        result_text = f"# Delegated {agent_type} output\n{task}\n"
+
+    summary = f"Prepared delegated {agent_type} output for '{task}'."
+    return {
+        "result_text": result_text,
+        "result_summary": summary,
+    }
+
+
+def _phase25_apply_to_envelope(
+    *,
+    envelope: Envelope,
+    normalized_utterance: str,
+) -> tuple[Dict[str, Any] | None, Envelope]:
+    if not _phase25_enabled:
+        return None, envelope
+    intent = str(envelope.get("intent", "")).strip()
+    if intent not in _PHASE25_DELEGATION_INTENTS:
+        return None, envelope
+
+    if intent == "list_delegation_capabilities":
+        capabilities = _phase25_capabilities_list()
+        lines = [
+            f"{item.get('agent_type', '')}: {item.get('description', '')} "
+            f"(allowed_tools={', '.join(item.get('allowed_tools', []))})"
+            for item in capabilities
+        ]
+        return {
+            "type": "delegation_capabilities",
+            "executed": False,
+            "capabilities": capabilities,
+            "message": "\n".join(lines) if lines else "No delegation capabilities are registered.",
+        }, envelope
+
+    if intent == "describe_delegation_result":
+        record = _phase25_last_delegation()
+        if not isinstance(record, dict):
+            return _phase19_clarify_response(
+                utterance=normalized_utterance,
+                message="No delegation result is available in this session yet.",
+            )
+        return {
+            "type": "delegation_result",
+            "executed": False,
+            "delegation": copy.deepcopy(record),
+            "message": _phase25_result_message(record),
+        }, envelope
+
+    agent_type = _entity_string(envelope, "delegation_agent_type") or _phase25_extract_agent_type(normalized_utterance)
+    if not agent_type:
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="Specify which specialist agent type to use (for example: coding agent).",
+        )
+    capability = _phase25_capability_registry().get(agent_type.upper())
+    if not isinstance(capability, dict):
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message=f"Unknown delegation agent type '{agent_type}'.",
+        )
+
+    task_description = _entity_string(envelope, "delegation_task") or _phase25_extract_task(normalized_utterance)
+    if not task_description:
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message="Describe the task to delegate.",
+        )
+    requested_tool = _phase25_requested_tool(task_description)
+    allowed_tools = capability.get("allowed_tools", [])
+    allowed_tools = allowed_tools if isinstance(allowed_tools, list) else []
+    if requested_tool not in allowed_tools:
+        return _phase19_clarify_response(
+            utterance=normalized_utterance,
+            message=(
+                f"Delegation rejected: {agent_type.upper()} does not allow '{requested_tool}'. "
+                "Choose a compatible agent or revise the task scope."
+            ),
+        )
+
+    project = _phase22_resolve_project_from_utterance(normalized_utterance)
+    project_id = str(project.get("project_id", "")) if isinstance(project, dict) else ""
+    project_name = str(project.get("name", "")) if isinstance(project, dict) else ""
+    delegation_id = f"dlg-{uuid.uuid4()}"
+    contract = DelegationContract(
+        delegation_id=delegation_id,
+        agent_type=agent_type.upper(),
+        task_description=task_description,
+        allowed_tools=list(allowed_tools),
+        requested_tool=requested_tool,
+        project_id=project_id,
+        project_name=project_name,
+        created_at=_utcnow().isoformat(),
+    )
+    contract_dict = _phase25_contract_to_dict(contract)
+    _phase25_contracts_by_id[delegation_id] = copy.deepcopy(contract_dict)
+    summary = (
+        f"Delegation {delegation_id}: agent_type: {contract.agent_type}; "
+        f"requested_tool: {contract.requested_tool}; task: {contract.task_description}."
+    )
+    entities: List[Dict[str, Any]] = [
+        {"name": "phase25_delegation", "value": "true", "normalized": "true"},
+        {"name": "phase25_delegation_id", "value": delegation_id, "normalized": delegation_id},
+        {"name": "phase25_agent_type", "value": contract.agent_type, "normalized": contract.agent_type},
+        {"name": "phase25_task", "value": contract.task_description, "normalized": contract.task_description},
+        {"name": "phase25_requested_tool", "value": contract.requested_tool, "normalized": contract.requested_tool},
+        {"name": "phase25_contract_json", "value": json.dumps(contract_dict, ensure_ascii=True), "normalized": json.dumps(contract_dict, ensure_ascii=True)},
+        {"name": "phase25_summary", "value": summary, "normalized": summary},
+    ]
+    if project_id:
+        entities.append({"name": "phase22_project_id", "value": project_id, "normalized": project_id})
+    composed = _phase17_envelope_for_intent(
+        utterance=normalized_utterance,
+        intent="plan.user_action_request",
+        entities=entities,
+        requires_approval=True,
+        risk_level="medium",
+        reason="Delegation execution requires explicit human approval.",
+    )
+    return None, composed
+
+
 def _interpret_phase1(utterance: str) -> Envelope:
     """Frozen Phase 1 deterministic interpreter behavior."""
     normalized = _normalize(utterance)
@@ -4616,6 +4950,10 @@ def _interpret_phase1(utterance: str) -> Envelope:
             reason="Ambiguous input requires clarification before any route selection.",
             next_prompt="Can you clarify what outcome you want?",
         )
+
+    phase25_envelope = _parse_phase25_intent(normalized)
+    if phase25_envelope is not None:
+        return phase25_envelope
 
     phase24_envelope = _parse_phase24_intent(normalized)
     if phase24_envelope is not None:
@@ -5247,6 +5585,11 @@ def set_phase23_enabled(enabled: bool) -> None:
 def set_phase24_enabled(enabled: bool) -> None:
     global _phase24_enabled
     _phase24_enabled = bool(enabled)
+
+
+def set_phase25_enabled(enabled: bool) -> None:
+    global _phase25_enabled
+    _phase25_enabled = bool(enabled)
 
 
 def set_current_working_set(
@@ -5994,6 +6337,14 @@ def reset_phase24_state() -> None:
     _phase24_milestones_by_project_id = {}
 
 
+def reset_phase25_state() -> None:
+    global _phase25_contracts_by_id, _phase25_last_delegation_by_session, _phase25_last_delegation_global
+    _phase25_contracts_by_id = {}
+    _phase25_last_delegation_by_session = {}
+    _phase25_last_delegation_global = None
+    _phase25_capability_registry.cache_clear()
+
+
 def reset_phase5_state() -> None:
     global _pending_action, _execution_events
     _pending_action = None
@@ -6004,6 +6355,7 @@ def reset_phase5_state() -> None:
     reset_phase22_state()
     reset_phase23_state()
     reset_phase24_state()
+    reset_phase25_state()
     _execution_events = []
     reset_phase7_memory()
     reset_observability_state()
@@ -6079,14 +6431,15 @@ def _execute_envelope_once(envelope: Envelope) -> Dict[str, Any]:
         event = execute_pending_action(action_id)
     finally:
         _pending_action = None
-    message = _phase19_persist_note_confirmation(event) or "Execution accepted and completed once."
-    return {
+    payload = {
         "type": "executed",
         "executed": True,
         "action_id": action_id,
         "execution_event": event,
-        "message": message,
+        "message": _execution_confirmation_message(event),
     }
+    payload.update(_phase25_execution_response_fields(event))
+    return payload
 
 
 def _split_plan_clauses(utterance: str) -> List[str]:
@@ -6102,6 +6455,11 @@ def _resolve_plan_step_intent(clause: str) -> str | None:
     lowered = clause.lower()
     if "empty text file" in lowered or ("empty" in lowered and "file" in lowered):
         return "plan.create_empty_file"
+    parsed_phase25 = _parse_phase25_intent(clause)
+    if parsed_phase25 is not None:
+        parsed_intent = str(parsed_phase25.get("intent", "")).strip()
+        if parsed_intent in _PHASE25_DELEGATION_INTENTS:
+            return "plan.user_action_request"
     parsed_phase24 = _parse_phase24_intent(clause)
     if parsed_phase24 is not None:
         parsed_intent = str(parsed_phase24.get("intent", "")).strip()
@@ -6251,6 +6609,7 @@ def _approval_request_message(pending: PendingAction) -> str:
         _entity_string(envelope, "phase21_summary")
         or _entity_string(envelope, "phase23_summary")
         or _entity_string(envelope, "phase24_summary")
+        or _entity_string(envelope, "phase25_summary")
     )
     if summary.strip():
         message = f"{summary} {message}"
@@ -6537,6 +6896,126 @@ def _phase24_update_projects_from_execution_event(event: Dict[str, Any]) -> None
     )
 
 
+def _phase25_update_from_execution_event(event: Dict[str, Any]) -> None:
+    global _phase25_last_delegation_global
+    if not _phase25_enabled:
+        return
+    if not isinstance(event, dict):
+        return
+
+    envelope = event.get("envelope", {})
+    envelope = envelope if isinstance(envelope, dict) else {}
+    if _entity_string(envelope, "phase25_delegation").lower() != "true":
+        return
+
+    delegation_id = _entity_string(envelope, "phase25_delegation_id")
+    contract = _phase25_parse_contract_json(_entity_string(envelope, "phase25_contract_json"))
+    if contract is None and delegation_id:
+        cached = _phase25_contracts_by_id.get(delegation_id)
+        if isinstance(cached, dict):
+            contract = copy.deepcopy(cached)
+    if contract is None:
+        contract = {
+            "delegation_id": delegation_id or f"dlg-{uuid.uuid4()}",
+            "agent_type": _entity_string(envelope, "phase25_agent_type") or "UNKNOWN",
+            "task_description": _entity_string(envelope, "phase25_task") or str(envelope.get("utterance", "")),
+            "requested_tool": _entity_string(envelope, "phase25_requested_tool") or "content_generation",
+            "allowed_tools": [],
+            "project_id": _entity_string(envelope, "phase22_project_id"),
+            "project_name": "",
+            "created_at": _utcnow().isoformat(),
+        }
+
+    contract.setdefault("delegation_id", delegation_id or f"dlg-{uuid.uuid4()}")
+    contract.setdefault("agent_type", "UNKNOWN")
+    contract.setdefault("task_description", str(envelope.get("utterance", "")))
+    contract.setdefault("requested_tool", "content_generation")
+    contract.setdefault("project_id", _entity_string(envelope, "phase22_project_id"))
+    contract.setdefault("project_name", "")
+    contract.setdefault("created_at", _utcnow().isoformat())
+
+    delegation_output = _invoke_delegated_agent(contract)
+    result_text = str(delegation_output.get("result_text", "")).strip()
+    if not result_text:
+        result_text = str(contract.get("task_description", "")).strip() or "Delegated output."
+    result_summary = _normalize(str(delegation_output.get("result_summary", ""))) or (
+        f"Delegated result prepared for {contract.get('agent_type', 'UNKNOWN')}."
+    )
+
+    now_iso = _utcnow().isoformat()
+    delegation_id_text = str(contract.get("delegation_id", "")).strip() or f"dlg-{uuid.uuid4()}"
+    delegation_token = delegation_id_text.split("-")[-1][:8] or "result"
+    base_label = _phase22_slug(
+        f"{contract.get('agent_type', 'agent')}_{str(contract.get('task_description', '')).strip()[:48]}"
+    )
+    captured_label = f"{base_label}_{delegation_token}"
+    captured = CapturedContent(
+        content_id=f"cc-{uuid.uuid4()}",
+        type=_phase20_working_set_type_from_text(result_text),
+        source="phase25_delegation",
+        text=result_text,
+        timestamp=now_iso,
+        origin_turn_id=str(current_correlation_id() or ""),
+        label=captured_label,
+        session_id=str(current_session_id() or ""),
+    )
+    _capture_store.append(captured)
+
+    _phase20_set_working_set(
+        {
+            "content_id": captured.content_id,
+            "label": captured.label,
+            "type": _phase20_working_set_type_from_text(captured.text),
+            "source": "phase25_delegation",
+            "path": "",
+            "text": captured.text,
+            "origin_turn_id": captured.origin_turn_id,
+        },
+        reason="phase25_delegation",
+    )
+
+    record = {
+        "delegation_id": delegation_id_text,
+        "agent_type": str(contract.get("agent_type", "")).upper(),
+        "task_description": str(contract.get("task_description", "")),
+        "requested_tool": str(contract.get("requested_tool", "")),
+        "project_id": str(contract.get("project_id", "")),
+        "project_name": str(contract.get("project_name", "")),
+        "result_text": result_text,
+        "result_summary": result_summary,
+        "captured_content_id": captured.content_id,
+        "captured_label": captured.label,
+        "timestamp": now_iso,
+    }
+    session_key = _phase25_session_key()
+    if session_key:
+        _phase25_last_delegation_by_session[session_key] = copy.deepcopy(record)
+    _phase25_last_delegation_global = copy.deepcopy(record)
+
+    tool_result = event.get("tool_result", {})
+    if isinstance(tool_result, dict):
+        tool_result["delegation_id"] = delegation_id_text
+        tool_result["delegation_result_summary"] = result_summary
+        tool_result["captured_content_id"] = captured.content_id
+        tool_result["captured_label"] = captured.label
+    event["delegation"] = copy.deepcopy(record)
+
+    project_id = str(contract.get("project_id", "")).strip()
+    if project_id:
+        _phase22_update_project_timestamp(project_id)
+
+    _emit_observability_event(
+        phase="phase25",
+        event_type="delegation_executed",
+        metadata={
+            "delegation_id": delegation_id_text,
+            "agent_type": record["agent_type"],
+            "project_id": record["project_id"],
+            "captured_content_id": captured.content_id,
+        },
+    )
+
+
 def _phase19_persist_note_confirmation(event: Dict[str, Any]) -> str | None:
     envelope = event.get("envelope", {})
     if not isinstance(envelope, dict):
@@ -6556,6 +7035,47 @@ def _phase19_persist_note_confirmation(event: Dict[str, Any]) -> str | None:
     if resolved_path:
         return f"Note persisted to {resolved_path}."
     return "Note persisted."
+
+
+def _phase25_delegation_confirmation(event: Dict[str, Any]) -> str | None:
+    if not isinstance(event, dict):
+        return None
+    tool_result = event.get("tool_result", {})
+    if not isinstance(tool_result, dict):
+        return None
+    delegation_id = str(tool_result.get("delegation_id", "")).strip()
+    summary = _normalize(str(tool_result.get("delegation_result_summary", "")))
+    if not delegation_id and not summary:
+        return None
+    if delegation_id and summary:
+        return f"Delegation {delegation_id} completed. {summary}"
+    if delegation_id:
+        return f"Delegation {delegation_id} completed."
+    return summary
+
+
+def _phase25_execution_response_fields(event: Dict[str, Any]) -> Dict[str, Any]:
+    tool_result = event.get("tool_result", {})
+    if not isinstance(tool_result, dict):
+        return {}
+    payload: Dict[str, Any] = {}
+    for source_key, target_key in (
+        ("delegation_id", "delegation_id"),
+        ("captured_label", "captured_label"),
+        ("captured_content_id", "captured_content_id"),
+    ):
+        value = tool_result.get(source_key)
+        if isinstance(value, str) and value.strip():
+            payload[target_key] = value
+    return payload
+
+
+def _execution_confirmation_message(event: Dict[str, Any]) -> str:
+    return (
+        _phase19_persist_note_confirmation(event)
+        or _phase25_delegation_confirmation(event)
+        or "Execution accepted and completed once."
+    )
 
 
 def _tool_parameters_from_envelope(contract: ToolContract, envelope: Envelope) -> Dict[str, Any]:
@@ -6695,6 +7215,7 @@ def execute_pending_action(action_id: str) -> Dict[str, Any]:
         _phase22_update_projects_from_execution_event(event)
         _phase23_update_tasks_from_execution_event(event)
         _phase24_update_projects_from_execution_event(event)
+        _phase25_update_from_execution_event(event)
         _record_memory_event(
             envelope=_pending_action.envelope_snapshot,
             contract=contract,
@@ -6917,6 +7438,12 @@ def _process_user_message_phase15(utterance: str) -> Dict[str, Any] | None:
     )
     if phase24_result is not None:
         return phase24_result
+    phase25_result, envelope = _phase25_apply_to_envelope(
+        envelope=envelope,
+        normalized_utterance=routed_utterance,
+    )
+    if phase25_result is not None:
+        return phase25_result
     phase24_guard_result, envelope = _phase24_apply_write_guard(
         envelope=envelope,
         normalized_utterance=routed_utterance,
@@ -7182,6 +7709,12 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
         )
         if phase24_result is not None:
             return phase24_result
+        phase25_result, envelope = _phase25_apply_to_envelope(
+            envelope=envelope,
+            normalized_utterance=routed_utterance,
+        )
+        if phase25_result is not None:
+            return phase25_result
         phase24_guard_result, envelope = _phase24_apply_write_guard(
             envelope=envelope,
             normalized_utterance=routed_utterance,
@@ -7324,7 +7857,7 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
     events = result["events"]
     persist_message = ""
     if len(events) == 1:
-        persist_message = _phase19_persist_note_confirmation(events[0]) or ""
+        persist_message = _execution_confirmation_message(events[0])
     if _pending_plan.next_step_index >= len(_pending_plan.plan.steps):
         plan_id = _pending_plan.plan.plan_id
         _pending_plan = None
@@ -7475,6 +8008,12 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                 )
                 if phase24_result is not None:
                     return phase24_result
+                phase25_result, envelope = _phase25_apply_to_envelope(
+                    envelope=envelope,
+                    normalized_utterance=routed_utterance,
+                )
+                if phase25_result is not None:
+                    return phase25_result
                 phase24_guard_result, envelope = _phase24_apply_write_guard(
                     envelope=envelope,
                     normalized_utterance=routed_utterance,
@@ -7596,14 +8135,15 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                 }
 
             _pending_action = None
-            message = _phase19_persist_note_confirmation(event) or "Execution accepted and completed once."
-            return {
+            payload = {
                 "type": "executed",
                 "executed": True,
                 "action_id": action_id,
                 "execution_event": event,
-                "message": message,
+                "message": _execution_confirmation_message(event),
             }
+            payload.update(_phase25_execution_response_fields(event))
+            return payload
         finally:
             record_latency_ms("interpreter_call_latency_ms", (time.perf_counter() - started) * 1000.0)
 
