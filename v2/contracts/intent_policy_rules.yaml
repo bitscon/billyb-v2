@@ -40,3 +40,33 @@ rules:
     risk_level: medium
     requires_approval: true
     reason: "Action-like planning request requires approval."
+
+  "PLAN::create_file":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Filesystem create_file writes local state and requires approval."
+
+  "PLAN::write_file":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Filesystem write_file modifies local state and requires approval."
+
+  "PLAN::append_file":
+    allowed: true
+    risk_level: medium
+    requires_approval: true
+    reason: "Filesystem append_file modifies local state and requires approval."
+
+  "PLAN::read_file":
+    allowed: true
+    risk_level: low
+    requires_approval: false
+    reason: "Filesystem read_file is read-only and may execute without approval."
+
+  "PLAN::delete_file":
+    allowed: true
+    risk_level: high
+    requires_approval: true
+    reason: "Filesystem delete_file is destructive and requires approval."

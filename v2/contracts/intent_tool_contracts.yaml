@@ -57,3 +57,174 @@ contracts:
           type: boolean
     risk_level: "medium"
     side_effects: true
+
+  - tool_name: "filesystem.create_file"
+    intent: "create_file"
+    description: "Create a file at path with optional initial contents (stubbed)."
+    input_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - path
+      properties:
+        path:
+          type: string
+          minLength: 1
+        contents:
+          type: string
+    output_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - operation
+        - path
+      properties:
+        status:
+          type: string
+          const: "stubbed"
+        operation:
+          type: string
+          const: "create_file"
+        path:
+          type: string
+          minLength: 1
+    risk_level: "medium"
+    side_effects: true
+
+  - tool_name: "filesystem.write_file"
+    intent: "write_file"
+    description: "Write contents to a file path (stubbed)."
+    input_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - path
+        - contents
+      properties:
+        path:
+          type: string
+          minLength: 1
+        contents:
+          type: string
+    output_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - operation
+        - path
+      properties:
+        status:
+          type: string
+          const: "stubbed"
+        operation:
+          type: string
+          const: "write_file"
+        path:
+          type: string
+          minLength: 1
+    risk_level: "medium"
+    side_effects: true
+
+  - tool_name: "filesystem.append_file"
+    intent: "append_file"
+    description: "Append contents to a file path (stubbed)."
+    input_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - path
+        - contents
+      properties:
+        path:
+          type: string
+          minLength: 1
+        contents:
+          type: string
+    output_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - operation
+        - path
+      properties:
+        status:
+          type: string
+          const: "stubbed"
+        operation:
+          type: string
+          const: "append_file"
+        path:
+          type: string
+          minLength: 1
+    risk_level: "medium"
+    side_effects: true
+
+  - tool_name: "filesystem.read_file"
+    intent: "read_file"
+    description: "Read file contents from a path (stubbed)."
+    input_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - path
+      properties:
+        path:
+          type: string
+          minLength: 1
+    output_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - operation
+        - path
+        - contents
+      properties:
+        status:
+          type: string
+          const: "stubbed"
+        operation:
+          type: string
+          const: "read_file"
+        path:
+          type: string
+          minLength: 1
+        contents:
+          type: string
+    risk_level: "low"
+    side_effects: false
+
+  - tool_name: "filesystem.delete_file"
+    intent: "delete_file"
+    description: "Delete a file at a path (stubbed)."
+    input_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - path
+      properties:
+        path:
+          type: string
+          minLength: 1
+    output_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - operation
+        - path
+      properties:
+        status:
+          type: string
+          const: "stubbed"
+        operation:
+          type: string
+          const: "delete_file"
+        path:
+          type: string
+          minLength: 1
+    risk_level: "high"
+    side_effects: true

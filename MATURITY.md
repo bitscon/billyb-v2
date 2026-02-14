@@ -1,75 +1,175 @@
-# Billy Maturity Snapshot
+Billy Maturity Snapshot (Authoritative)
+Release
 
-## Release
-- Tag: `maturity-level-16`
-- Status: `Level 16 - Explicit Content Capture` achieved
+Tag: maturity-level-17
 
-## Current Maturity
-Billy is operating at Level 16 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, and explicit content capture.
+Status: Level 17 — Governed Filesystem Collaboration achieved
 
-## Phase Summary (1-9)
-1. `Phase 1 - Deterministic Interpreter`
-   Deterministic intent envelope generation.
-2. `Phase 2 - Semantic Lane Routing`
-   Lane classification with confidence threshold and mandatory deterministic fallback.
-3. `Phase 3 - Structured Intent Extraction`
-   Schema-validated JSON extraction (`intent`, `entities`, `confidence`) with bounded retries and fallback.
-4. `Phase 4 - Deterministic Policy Evaluation`
-   Deterministic policy decisions (`allowed`, `risk_level`, `requires_approval`) with optional explanation-only LLM path.
-5. `Phase 5 - Explicit Conversational Approval Gating`
-   Pending-action lifecycle, exact approval phrases, TTL, single-use approval, single-shot execution gate.
-6. `Phase 6 - Contract-Bound Tool Execution`
-   Static intent-to-tool contracts with typed, stubbed execution backend and auditable events.
-7. `Phase 7 - Append-Only Memory`
-   Append-only memory recording for execution attempts plus deterministic recall APIs.
-8. `Phase 8 - Approval-Gated Multi-Step Planning`
-   Plan construction as explicit data; step/plan approval modes; ordered execution through existing gates.
-9. `Phase 9 - Conversational Entrypoint Unification`
-   Unified conversational routing through governed pipeline; deprecated engineer-mode inputs are informational only.
+Current Maturity
 
-## Maturity Level 9 — Approval-Gated Planning & Execution (Frozen)
+Billy is operating at Level 17 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, and governed filesystem collaboration.
+
+Phase Summary (1–9)
+
+(unchanged — your existing section stays as-is)
+
+Maturity Level 9 — Approval-Gated Planning & Execution (Frozen)
+
 Capabilities:
-- Multi-step plan construction with contract-mapped steps
-- Approval-gated ordered execution
-- Per-step auditable execution and memory recording
+
+Multi-step plan construction with contract-mapped steps
+
+Approval-gated ordered execution
+
+Per-step auditable execution and memory recording
 
 Status:
 Frozen infrastructure. No dynamic replanning, auto-retry, or implicit step skipping.
 
-## Maturity Level 10 — Unified Conversational Governance (Frozen)
+Maturity Level 10 — Unified Conversational Governance (Frozen)
+
 Capabilities:
-- All conversational input is governed through a single entrypoint
-- Natural-language action requests route to policy + approval flow
-- Legacy engineer-mode inputs are deprecated and non-blocking
-- Ambiguous input routes to `CLARIFY`, not legacy rejection
+
+All conversational input routed through a single governed entrypoint
+
+Natural-language action requests route to policy + approval flow
+
+Deprecated engineer-mode inputs are informational and non-blocking
+
+Ambiguous input routes to CLARIFY, not legacy rejection
 
 Status:
 Frozen UX/governance infrastructure. No legacy mode revival or shortcut authority paths.
 
-## Maturity Level 11 — LLM Boundary & Control Loop Integrity (Frozen)
-LLM output is now strictly a subroutine under governed orchestration: every conversational turn re-enters `process_user_message(...)`, no terminal chat mode is created by freeform replies, and subsequent operational or ambiguous inputs continue through the same policy/approval/clarify pipeline without legacy fallback takeover.
+Maturity Level 11 — LLM Boundary & Control Loop Integrity (Frozen)
 
-## Maturity Level 15 — Bounded Autonomy, Human-Governed (Frozen)
-Opt-in bounded autonomy with deterministic scope, explicit constraints, policy-preserving execution, full audit/replay coverage, and immediate human revocation via kill switch.
+Capabilities:
 
-## Maturity Level 16 — Explicit Content Capture (Frozen)
-Explicit user-initiated capture of assistant output into auditable content objects (`content_id`, label, source, turn correlation) with deterministic reference resolution by `content_id` or label and ambiguity rejection.
+LLM output strictly operates as a subroutine under governed orchestration
 
-## Freeze Policy
+No terminal chat modes; every turn re-enters governed processing
+
+Operational and ambiguous inputs continue through the same policy/approval pipeline
+
+Status:
+Frozen control-loop infrastructure. LLM cannot seize conversational or execution authority.
+
+Maturity Level 12 — Read-Only Advisory Memory (Frozen)
+
+Capabilities:
+
+Read-only advisory summaries over append-only execution memory
+
+Pattern insights and historical context for human decision-making
+
+Optional explanation-only LLM synthesis
+
+Explicit non-authoritative labeling (“suggestions only”)
+
+Status:
+Frozen advisory infrastructure. Memory does not influence policy, approval, planning, or execution.
+
+Maturity Level 13 — Observability & Replay (Frozen)
+
+Capabilities:
+
+Structured audit events across interpretation, policy, planning, approval, and execution
+
+Correlated session identifiers and execution timelines
+
+Deterministic replay of past interactions (“why did this happen?”)
+
+Metrics and observability hooks without behavioral influence
+
+Status:
+Frozen observability infrastructure. Telemetry is read-only and non-invasive.
+
+Maturity Level 14 — Policy & Contract Evolution (Frozen)
+
+Capabilities:
+
+Versioned policy and tool contract artifacts
+
+Draft → review → approve workflow for governance changes
+
+Diffing and simulation of proposed rule changes
+
+Human-governed promotion and rollback only
+
+Status:
+Frozen governance evolution infrastructure. No autonomous policy or contract modification.
+
+Maturity Level 15 — Bounded Autonomy, Human-Governed (Frozen)
+
+Capabilities:
+
+Opt-in bounded autonomy with deterministic scope and constraints
+
+Policy-preserving execution without per-step approval
+
+Immediate human revocation via kill switch
+
+Full audit and replay coverage
+
+Status:
+Frozen autonomy infrastructure. No implicit, expanding, or self-granted autonomy.
+
+Maturity Level 16 — Explicit Content Capture (Frozen)
+
+Capabilities:
+
+Explicit user-initiated capture of assistant output into auditable content objects
+
+Deterministic reference resolution by content_id or label
+
+Ambiguity rejection for unsafe or underspecified references
+
+Status:
+Frozen content-capture infrastructure. No implicit capture or hidden conversational state.
+
+Maturity Level 17 — Governed Filesystem Collaboration (Frozen)
+
+Capabilities:
+
+Natural-language filesystem intents mapped to explicit tool contracts
+
+Path normalization and scope enforcement (home/workspace allowlist)
+
+Approval-gated mutating actions (create/write/append/delete)
+
+Read-only file operations allowed without approval (read_file)
+
+Integration with explicit content capture for file writes
+
+Status:
+Frozen filesystem collaboration infrastructure. No shell passthrough, inferred paths, auto-approval, or out-of-scope filesystem access.
+
+Freeze Policy
+
 Once a phase is approved and frozen:
-- No tuning, heuristic expansion, or semantic drift is allowed in that phase.
-- Any change requires explicit maturity promotion and acceptance.
-- Freeze applies to behavior, gates, and user-facing governance semantics.
 
-## Docs Gate (Required for Every Future Phase)
+No tuning, heuristic expansion, or semantic drift is allowed
+
+Any change requires explicit maturity promotion and acceptance
+
+Freeze applies to behavior, gates, and user-facing governance semantics
+
+Docs Gate (Required for Every Future Phase)
+
 A phase/PR is incomplete unless it includes:
-- `README.md` update
-- `MATURITY.md` update
-- Onboarding update when user-facing behavior changes
-- Test proof that behavior and docs are aligned
 
-## Contracts Index
-- `v2/contracts/intent_policy_rules.yaml`
-  Deterministic policy rules keyed by `lane::intent`.
-- `v2/contracts/intent_tool_contracts.yaml`
-  Static intent-to-tool contract mapping used by governed execution.
+README.md update
+
+MATURITY.md update
+
+Onboarding update when user-facing behavior changes
+
+Test proof that behavior and docs are aligned
+
+Contracts Index
+
+v2/contracts/intent_policy_rules.yaml
+Deterministic policy rules keyed by lane::intent
+
+v2/contracts/intent_tool_contracts.yaml
+Static intent-to-tool contract mapping used by governed execution

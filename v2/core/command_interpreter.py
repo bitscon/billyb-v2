@@ -65,6 +65,14 @@ _ACTION_KEYWORDS = (
     "move",
     "copy",
 )
+_FILESYSTEM_INTENTS = {
+    "create_file",
+    "write_file",
+    "append_file",
+    "read_file",
+    "delete_file",
+}
+_FILESYSTEM_WRITE_INTENTS = {"create_file", "write_file", "append_file", "delete_file"}
 
 _CONVERSATIONAL_PREFIXES = (
     "what",
@@ -107,6 +115,7 @@ _PHASE8_RISK_ORDER = {
     "critical": 3,
 }
 _PHASE15_CONSTRAINT_MODES = {"read_only", "bounded_write"}
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 
 _PHASE4_DEFAULT_POLICY = {
     # "privileged" maps to schema-valid "critical".
@@ -249,6 +258,37 @@ class StubToolInvoker:
                 "created": True,
                 "path": str(parameters.get("path", "$HOME/untitled.txt")),
             }
+        if contract.intent == "create_file":
+            return {
+                "status": "stubbed",
+                "operation": "create_file",
+                "path": str(parameters.get("path", "")),
+            }
+        if contract.intent == "write_file":
+            return {
+                "status": "stubbed",
+                "operation": "write_file",
+                "path": str(parameters.get("path", "")),
+            }
+        if contract.intent == "append_file":
+            return {
+                "status": "stubbed",
+                "operation": "append_file",
+                "path": str(parameters.get("path", "")),
+            }
+        if contract.intent == "read_file":
+            return {
+                "status": "stubbed",
+                "operation": "read_file",
+                "path": str(parameters.get("path", "")),
+                "contents": "stubbed file contents",
+            }
+        if contract.intent == "delete_file":
+            return {
+                "status": "stubbed",
+                "operation": "delete_file",
+                "path": str(parameters.get("path", "")),
+            }
         return {
             "status": "stubbed",
             "accepted": True,
@@ -292,6 +332,8 @@ def _is_deprecated_engineer_mode_input(text: str) -> bool:
 def _phase9_normalize_utterance(text: str) -> str:
     normalized = _normalize(text)
     lowered = normalized.lower()
+    if _parse_filesystem_intent(normalized) is not None:
+        return normalized
     if lowered.startswith("save ") and "file" in lowered and "home directory" in lowered:
         # Route natural-language save requests through existing PLAN policy/approval flow.
         return re.sub(r"(?i)^save\b", "create", normalized, count=1)
@@ -362,6 +404,262 @@ def _is_conversational(normalized: str) -> bool:
     if lowered in {"hi", "hello", "hey", "thanks", "thank you"}:
         return True
     return any(lowered.startswith(prefix + " ") for prefix in _CONVERSATIONAL_PREFIXES)
+
+
+def _strip_wrapping_quotes(value: str) -> str:
+    text = _normalize(value).strip()
+    if len(text) >= 2 and ((text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'"))):
+        return text[1:-1].strip()
+    return text
+
+
+def _phase17_location_hint(raw: str | None) -> str:
+    lowered = str(raw or "").lower()
+    if "home" in lowered:
+        return "home"
+    if "workspace" in lowered or "sandbox" in lowered:
+        return "workspace"
+    return "workspace"
+
+
+def _phase17_allowed_roots() -> List[Path]:
+    roots = [Path.home().resolve(), _WORKSPACE_ROOT.resolve()]
+    deduped: List[Path] = []
+    for root in roots:
+        if root not in deduped:
+            deduped.append(root)
+    return deduped
+
+
+def _phase17_normalize_path(raw_path: str, *, location_hint: str) -> tuple[str | None, str | None]:
+    path_text = _strip_wrapping_quotes(raw_path)
+    if not path_text:
+        return None, "Missing file path."
+
+    base = Path.home() if location_hint == "home" else _WORKSPACE_ROOT
+    candidate = Path(path_text).expanduser()
+    if not candidate.is_absolute():
+        candidate = (base / candidate)
+    normalized = candidate.resolve(strict=False)
+
+    allowed = any(normalized.is_relative_to(root) for root in _phase17_allowed_roots())
+    if not allowed:
+        return None, f"Path outside allowed scope: {normalized}"
+    return str(normalized), None
+
+
+def _phase17_envelope_for_intent(
+    *,
+    utterance: str,
+    intent: str,
+    entities: List[Dict[str, Any]],
+    requires_approval: bool,
+    risk_level: str,
+    reason: str,
+) -> Envelope:
+    return _envelope(
+        utterance=utterance,
+        lane="PLAN",
+        intent=intent,
+        entities=entities,
+        confidence=0.96,
+        requires_approval=requires_approval,
+        risk_level=risk_level,
+        allowed=True,
+        reason=reason,
+        next_prompt="",
+    )
+
+
+def _phase17_clarify_envelope(*, utterance: str, message: str) -> Envelope:
+    return _envelope(
+        utterance=utterance,
+        lane="CLARIFY",
+        intent="clarify.request_context",
+        entities=[],
+        confidence=0.35,
+        requires_approval=False,
+        risk_level="low",
+        allowed=True,
+        reason="Filesystem request is missing required parameters.",
+        next_prompt=message,
+    )
+
+
+def _parse_filesystem_intent(normalized: str) -> Envelope | None:
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+
+    create = re.fullmatch(
+        r"create (?:a )?(?:blank |empty )?file(?: called| named| at path) (?P<path>.+?)(?: in (?P<loc>my home directory|home directory|my workspace|workspace|sandbox))?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if create is not None:
+        location_hint = _phase17_location_hint(create.group("loc"))
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="create_file",
+            entities=[
+                {"name": "path", "value": _strip_wrapping_quotes(create.group("path")), "normalized": None},
+                {"name": "path_location_hint", "value": location_hint, "normalized": location_hint},
+                {"name": "contents", "value": "", "normalized": ""},
+            ],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Create-file request requires approval before execution.",
+        )
+    if re.fullmatch(
+        r"create (?:a )?(?:blank |empty )?file(?: in (?:my home directory|home directory|my workspace|workspace|sandbox))?$",
+        lowered,
+        flags=re.IGNORECASE,
+    ):
+        return _phase17_clarify_envelope(
+            utterance=normalized,
+            message="What filename or path should I create?",
+        )
+
+    save_captured = re.fullmatch(
+        r"save captured (?P<label>[a-z0-9_-]+) to file (?:named|called) (?P<path>.+?)(?: in (?P<loc>my home directory|home directory|my workspace|workspace|sandbox))?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if save_captured is not None:
+        location_hint = _phase17_location_hint(save_captured.group("loc"))
+        label = _normalize_capture_label(save_captured.group("label"))
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="write_file",
+            entities=[
+                {"name": "path", "value": _strip_wrapping_quotes(save_captured.group("path")), "normalized": None},
+                {"name": "path_location_hint", "value": location_hint, "normalized": location_hint},
+                {"name": "captured_content_label", "value": label, "normalized": label},
+            ],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Write-file request requires approval before execution.",
+        )
+
+    save_that = re.fullmatch(
+        r"save that (?P<label>[a-z0-9_-]+) to (?:a )?file(?: named| called)? (?P<path>.+?)(?: in (?P<loc>my home directory|home directory|my workspace|workspace|sandbox))?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if save_that is not None:
+        location_hint = _phase17_location_hint(save_that.group("loc"))
+        label = _normalize_capture_label(save_that.group("label"))
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="write_file",
+            entities=[
+                {"name": "path", "value": _strip_wrapping_quotes(save_that.group("path")), "normalized": None},
+                {"name": "path_location_hint", "value": location_hint, "normalized": location_hint},
+                {"name": "captured_content_label", "value": label, "normalized": label},
+            ],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Write-file request requires approval before execution.",
+        )
+
+    write = re.fullmatch(
+        r"write (?:text )?(?P<contents>.+?) to file (?P<path>.+?)(?: in (?P<loc>my home directory|home directory|my workspace|workspace|sandbox))?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if write is not None:
+        location_hint = _phase17_location_hint(write.group("loc"))
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="write_file",
+            entities=[
+                {"name": "path", "value": _strip_wrapping_quotes(write.group("path")), "normalized": None},
+                {"name": "path_location_hint", "value": location_hint, "normalized": location_hint},
+                {"name": "contents", "value": _strip_wrapping_quotes(write.group("contents")), "normalized": None},
+            ],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Write-file request requires approval before execution.",
+        )
+    if lowered.startswith("write") and "to file" in lowered:
+        return _phase17_clarify_envelope(
+            utterance=normalized,
+            message="Please provide both file contents and a target filename/path.",
+        )
+
+    append = re.fullmatch(
+        r"append (?:text )?(?P<contents>.+?) to file (?P<path>.+?)(?: in (?P<loc>my home directory|home directory|my workspace|workspace|sandbox))?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if append is not None:
+        location_hint = _phase17_location_hint(append.group("loc"))
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="append_file",
+            entities=[
+                {"name": "path", "value": _strip_wrapping_quotes(append.group("path")), "normalized": None},
+                {"name": "path_location_hint", "value": location_hint, "normalized": location_hint},
+                {"name": "contents", "value": _strip_wrapping_quotes(append.group("contents")), "normalized": None},
+            ],
+            requires_approval=True,
+            risk_level="medium",
+            reason="Append-file request requires approval before execution.",
+        )
+    if lowered.startswith("append") and "to file" in lowered:
+        return _phase17_clarify_envelope(
+            utterance=normalized,
+            message="Please provide both text to append and the target file path.",
+        )
+
+    read_file = re.fullmatch(
+        r"read file (?P<path>.+?)(?: from (?P<loc>my home directory|home directory|my workspace|workspace|sandbox))?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if read_file is not None:
+        location_hint = _phase17_location_hint(read_file.group("loc"))
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="read_file",
+            entities=[
+                {"name": "path", "value": _strip_wrapping_quotes(read_file.group("path")), "normalized": None},
+                {"name": "path_location_hint", "value": location_hint, "normalized": location_hint},
+            ],
+            requires_approval=False,
+            risk_level="low",
+            reason="Read-file request is read-only and may execute without approval.",
+        )
+    if lowered in {"read file", "read a file"}:
+        return _phase17_clarify_envelope(
+            utterance=normalized,
+            message="What file path should I read?",
+        )
+
+    delete_file = re.fullmatch(
+        r"delete (?:the )?file(?: at path)? (?P<path>.+?)(?: from (?P<loc>my home directory|home directory|my workspace|workspace|sandbox))?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if delete_file is not None:
+        location_hint = _phase17_location_hint(delete_file.group("loc"))
+        return _phase17_envelope_for_intent(
+            utterance=normalized,
+            intent="delete_file",
+            entities=[
+                {"name": "path", "value": _strip_wrapping_quotes(delete_file.group("path")), "normalized": None},
+                {"name": "path_location_hint", "value": location_hint, "normalized": location_hint},
+            ],
+            requires_approval=True,
+            risk_level="high",
+            reason="Delete-file request requires approval before execution.",
+        )
+    if lowered in {"delete file", "delete the file", "delete the file at path"}:
+        return _phase17_clarify_envelope(
+            utterance=normalized,
+            message="What file path should I delete?",
+        )
+    return None
 
 
 def _normalize_capture_label(raw: str) -> str:
@@ -534,6 +832,83 @@ def _resolve_captured_reference(utterance: str) -> tuple[CapturedContent | None,
     return None, None
 
 
+def _resolve_captured_label(label: str) -> tuple[CapturedContent | None, str | None]:
+    normalized = _normalize_capture_label(label)
+    if not normalized:
+        return None, "Capture reference rejected: captured label is empty."
+    items = _capture_store.get_by_label(normalized)
+    if len(items) > 1:
+        return None, f"Capture reference rejected: label '{normalized}' is ambiguous."
+    if len(items) == 0:
+        return None, f"Capture reference rejected: label '{normalized}' was not found."
+    return items[0], None
+
+
+def _phase17_validate_filesystem_envelope(envelope: Envelope) -> tuple[Dict[str, Any] | None, Envelope]:
+    intent = str(envelope.get("intent", "")).strip()
+    if intent not in _FILESYSTEM_INTENTS:
+        return None, envelope
+
+    updated = copy.deepcopy(envelope)
+    entities = updated.get("entities", [])
+    if not isinstance(entities, list):
+        entities = []
+
+    location_hint = "workspace"
+    raw_path = ""
+    has_captured_content = False
+    contents_value = ""
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        entity_name = str(entity.get("name", ""))
+        if entity_name == "path":
+            raw_path = str(entity.get("value", ""))
+        elif entity_name == "path_location_hint":
+            location_hint = str(entity.get("normalized") or entity.get("value") or "workspace")
+        elif entity_name == "contents":
+            contents_value = str(entity.get("value") or entity.get("normalized") or "")
+        elif entity_name == "captured_content":
+            has_captured_content = True
+
+    if not raw_path.strip():
+        return {
+            "type": "filesystem_rejected",
+            "executed": False,
+            "envelope": envelope,
+            "message": "Filesystem request rejected: file path is required.",
+        }, envelope
+
+    if intent in {"write_file", "append_file"} and not (contents_value.strip() or has_captured_content):
+        return {
+            "type": "filesystem_rejected",
+            "executed": False,
+            "envelope": envelope,
+            "message": "Filesystem request rejected: file contents are required.",
+        }, envelope
+
+    normalized_path, error = _phase17_normalize_path(raw_path, location_hint=location_hint)
+    if error:
+        return {
+            "type": "filesystem_rejected",
+            "executed": False,
+            "envelope": envelope,
+            "message": f"Filesystem request rejected: {error}",
+        }, envelope
+
+    normalized_entities: List[Dict[str, Any]] = []
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        copied = copy.deepcopy(entity)
+        if str(copied.get("name", "")) == "path":
+            copied["normalized"] = normalized_path
+            copied["value"] = raw_path
+        normalized_entities.append(copied)
+    updated["entities"] = normalized_entities
+    return None, updated
+
+
 def _phase16_apply_to_envelope(
     *,
     envelope: Envelope,
@@ -544,6 +919,48 @@ def _phase16_apply_to_envelope(
 
     if str(envelope.get("lane", "")).upper() != "PLAN":
         return None, envelope
+
+    entities = envelope.get("entities", [])
+    if isinstance(entities, list):
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+            if str(entity.get("name", "")) != "captured_content_label":
+                continue
+            label_value = str(entity.get("normalized") or entity.get("value") or "")
+            referenced, error = _resolve_captured_label(label_value)
+            if error:
+                return {
+                    "type": "capture_reference_rejected",
+                    "executed": False,
+                    "envelope": envelope,
+                    "message": error,
+                }, envelope
+            if referenced is not None:
+                updated = copy.deepcopy(envelope)
+                updated_entities = updated.get("entities", [])
+                if not isinstance(updated_entities, list):
+                    updated_entities = []
+                updated_entities.append(
+                    {
+                        "name": "captured_content",
+                        "content_id": referenced.content_id,
+                        "label": referenced.label,
+                        "type": referenced.type,
+                        "source": referenced.source,
+                        "text": referenced.text,
+                        "origin_turn_id": referenced.origin_turn_id,
+                    }
+                )
+                updated["entities"] = updated_entities
+                envelope = updated
+            break
+
+    existing_entities = envelope.get("entities", [])
+    if isinstance(existing_entities, list):
+        for entity in existing_entities:
+            if isinstance(entity, dict) and str(entity.get("name", "")) == "captured_content":
+                return None, envelope
 
     referenced, error = _resolve_captured_reference(str(envelope.get("utterance", normalized_utterance)))
     if error:
@@ -656,6 +1073,10 @@ def _interpret_phase1(utterance: str) -> Envelope:
             reason="Ambiguous input requires clarification before any route selection.",
             next_prompt="Can you clarify what outcome you want?",
         )
+
+    filesystem_envelope = _parse_filesystem_intent(normalized)
+    if filesystem_envelope is not None:
+        return filesystem_envelope
 
     capture_request = _parse_capture_request(normalized)
     if capture_request is not None:
@@ -872,6 +1293,11 @@ def _interpret_phase2(utterance: str) -> Envelope:
 
     # Keep explicit slash-command handling under frozen deterministic behavior.
     if normalized.startswith("/"):
+        return phase1_envelope
+
+    # Preserve explicit filesystem clarification prompts (missing required params).
+    filesystem_candidate = _parse_filesystem_intent(normalized)
+    if filesystem_candidate is not None and str(filesystem_candidate.get("lane", "")).upper() == "CLARIFY":
         return phase1_envelope
 
     lane, semantic_confidence = _semantic_lane_router.route_lane(normalized)
@@ -1939,6 +2365,35 @@ def _is_actionable_envelope(envelope: Envelope) -> bool:
     return lane == "PLAN" and (allowed or requires_approval)
 
 
+def _requires_explicit_approval(envelope: Envelope) -> bool:
+    return bool(envelope.get("requires_approval", False))
+
+
+def _is_auto_executable(envelope: Envelope) -> bool:
+    if str(envelope.get("lane", "")).upper() != "PLAN":
+        return False
+    policy = envelope.get("policy", {}) if isinstance(envelope.get("policy"), dict) else {}
+    allowed = bool(policy.get("allowed", False))
+    return allowed and not _requires_explicit_approval(envelope)
+
+
+def _execute_envelope_once(envelope: Envelope) -> Dict[str, Any]:
+    global _pending_action
+    _pending_action = _create_pending_action(envelope)
+    action_id = _pending_action.action_id
+    try:
+        event = execute_pending_action(action_id)
+    finally:
+        _pending_action = None
+    return {
+        "type": "executed",
+        "executed": True,
+        "action_id": action_id,
+        "execution_event": event,
+        "message": "Execution accepted and completed once.",
+    }
+
+
 def _split_plan_clauses(utterance: str) -> List[str]:
     normalized = _normalize(utterance)
     if not normalized:
@@ -1952,6 +2407,11 @@ def _resolve_plan_step_intent(clause: str) -> str | None:
     lowered = clause.lower()
     if "empty text file" in lowered or ("empty" in lowered and "file" in lowered):
         return "plan.create_empty_file"
+    parsed_filesystem = _parse_filesystem_intent(clause)
+    if parsed_filesystem is not None:
+        parsed_intent = str(parsed_filesystem.get("intent", "")).strip()
+        if parsed_intent:
+            return parsed_intent
     if _is_action_like(clause):
         return "plan.user_action_request"
     return None
@@ -2084,6 +2544,37 @@ def _approval_request_message(pending: PendingAction) -> str:
     )
 
 
+def _entity_string(envelope: Envelope, name: str) -> str:
+    entities = envelope.get("entities", [])
+    if not isinstance(entities, list):
+        return ""
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        if str(entity.get("name", "")) != name:
+            continue
+        normalized = entity.get("normalized")
+        value = normalized if isinstance(normalized, str) and normalized.strip() else entity.get("value")
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _captured_text_from_envelope(envelope: Envelope) -> str:
+    entities = envelope.get("entities", [])
+    if not isinstance(entities, list):
+        return ""
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        if str(entity.get("name", "")) != "captured_content":
+            continue
+        text = entity.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+    return ""
+
+
 def _tool_parameters_from_envelope(contract: ToolContract, envelope: Envelope) -> Dict[str, Any]:
     if contract.intent == "plan.create_empty_file":
         target_dir = "$HOME"
@@ -2098,6 +2589,23 @@ def _tool_parameters_from_envelope(contract: ToolContract, envelope: Envelope) -
                 target_dir = value.strip()
                 break
         return {"path": f"{target_dir.rstrip('/')}/untitled.txt"}
+
+    if contract.intent in _FILESYSTEM_INTENTS:
+        path = _entity_string(envelope, "path")
+        contents = _entity_string(envelope, "contents") or _captured_text_from_envelope(envelope)
+        if contract.intent == "create_file":
+            payload: Dict[str, Any] = {"path": path}
+            if contents:
+                payload["contents"] = contents
+            return payload
+        if contract.intent == "write_file":
+            return {"path": path, "contents": contents}
+        if contract.intent == "append_file":
+            return {"path": path, "contents": contents}
+        if contract.intent == "read_file":
+            return {"path": path}
+        if contract.intent == "delete_file":
+            return {"path": path}
 
     return {
         "utterance": str(envelope.get("utterance", "")),
@@ -2386,6 +2894,9 @@ def _process_user_message_phase15(utterance: str) -> Dict[str, Any] | None:
     )
     if phase16_result is not None:
         return phase16_result
+    phase17_result, envelope = _phase17_validate_filesystem_envelope(envelope)
+    if phase17_result is not None:
+        return phase17_result
 
     if not _is_actionable_envelope(envelope):
         return {
@@ -2606,6 +3117,9 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
         )
         if phase16_result is not None:
             return phase16_result
+        phase17_result, envelope = _phase17_validate_filesystem_envelope(envelope)
+        if phase17_result is not None:
+            return phase17_result
         if not _is_actionable_envelope(envelope):
             return {
                 "type": "no_action",
@@ -2613,6 +3127,23 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
                 "envelope": envelope,
                 "message": "",
             }
+        if _is_auto_executable(envelope):
+            _emit_observability_event(
+                phase="phase5",
+                event_type="approval_not_required",
+                metadata={
+                    "intent": str(envelope.get("intent", "unknown.intent")),
+                    "reason": "policy_allows_auto_execute",
+                },
+            )
+            try:
+                return _execute_envelope_once(envelope)
+            except Exception as exc:
+                return {
+                    "type": "execution_rejected",
+                    "executed": False,
+                    "message": f"Execution rejected: {exc}",
+                }
 
         try:
             plan = build_execution_plan(envelope)
@@ -2823,6 +3354,9 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                 )
                 if phase16_result is not None:
                     return phase16_result
+                phase17_result, envelope = _phase17_validate_filesystem_envelope(envelope)
+                if phase17_result is not None:
+                    return phase17_result
                 if not _is_actionable_envelope(envelope):
                     return {
                         "type": "no_action",
@@ -2830,6 +3364,24 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                         "envelope": envelope,
                         "message": "",
                     }
+
+                if _is_auto_executable(envelope):
+                    _emit_observability_event(
+                        phase="phase5",
+                        event_type="approval_not_required",
+                        metadata={
+                            "intent": str(envelope.get("intent", "unknown.intent")),
+                            "reason": "policy_allows_auto_execute",
+                        },
+                    )
+                    try:
+                        return _execute_envelope_once(envelope)
+                    except Exception as exc:
+                        return {
+                            "type": "execution_rejected",
+                            "executed": False,
+                            "message": f"Execution rejected: {exc}",
+                        }
 
                 _pending_action = _create_pending_action(envelope)
                 _emit_observability_event(
