@@ -364,8 +364,24 @@ def _is_deprecated_engineer_mode_input(text: str) -> bool:
     )
 
 
+def _phase17_filesystem_override_for_legacy_engineer_input(text: str) -> str | None:
+    normalized = _normalize(text)
+    lowered = normalized.lower()
+    if not lowered.startswith("/engineer "):
+        return None
+    candidate = _normalize(normalized[len("/engineer "):])
+    if not candidate:
+        return None
+    if _parse_filesystem_intent(candidate) is None:
+        return None
+    return candidate
+
+
 def _phase9_normalize_utterance(text: str) -> str:
     normalized = _normalize(text)
+    filesystem_override = _phase17_filesystem_override_for_legacy_engineer_input(normalized)
+    if filesystem_override is not None:
+        return filesystem_override
     lowered = normalized.lower()
     if _parse_filesystem_intent(normalized) is not None:
         return normalized
@@ -2983,12 +2999,12 @@ def _process_user_message_phase15(utterance: str) -> Dict[str, Any] | None:
         return None
 
     normalized = _normalize(utterance)
+    routed_utterance = _phase9_normalize_utterance(normalized)
     if _is_valid_approval_phrase(normalized):
         return None
-    if _is_deprecated_engineer_mode_input(normalized):
+    if _is_deprecated_engineer_mode_input(normalized) and routed_utterance == normalized:
         return None
 
-    routed_utterance = _phase9_normalize_utterance(normalized)
     envelope = interpret_utterance(routed_utterance)
     increment_metric("policy_decisions")
     _emit_observability_event(
@@ -3201,7 +3217,8 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
         }
 
     if _pending_plan is None:
-        if _is_deprecated_engineer_mode_input(normalized):
+        routed_utterance = _phase9_normalize_utterance(normalized)
+        if _is_deprecated_engineer_mode_input(normalized) and routed_utterance == normalized:
             return _phase9_engineer_mode_info_response(normalized)
 
         if _is_valid_approval_phrase(normalized):
@@ -3211,7 +3228,6 @@ def _process_user_message_phase8(utterance: str) -> Dict[str, Any]:
                 "message": "Approval rejected: no pending plan to approve.",
             }
 
-        routed_utterance = _phase9_normalize_utterance(normalized)
         envelope = interpret_utterance(routed_utterance)
         increment_metric("policy_decisions")
         _emit_observability_event(
@@ -3432,7 +3448,8 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
             global _pending_action
 
             if _pending_action is None:
-                if _is_deprecated_engineer_mode_input(normalized):
+                routed_utterance = _phase9_normalize_utterance(normalized)
+                if _is_deprecated_engineer_mode_input(normalized) and routed_utterance == normalized:
                     return _phase9_engineer_mode_info_response(normalized)
 
                 if _is_valid_approval_phrase(normalized):
@@ -3450,7 +3467,6 @@ def process_user_message(utterance: str) -> Dict[str, Any]:
                         "message": "Approval rejected: no pending action to approve.",
                     }
 
-                routed_utterance = _phase9_normalize_utterance(normalized)
                 envelope = interpret_utterance(routed_utterance)
                 increment_metric("policy_decisions")
                 _emit_observability_event(

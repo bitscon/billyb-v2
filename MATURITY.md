@@ -143,6 +143,7 @@ Integration with explicit content capture for file writes
 
 Status:
 Frozen filesystem collaboration infrastructure. No shell passthrough, inferred paths, auto-approval, or out-of-scope filesystem access.
+Legacy engineer execution authority fully removed for filesystem intents.
 
 Maturity Level 18 — Content Generation Intent Class (Frozen)
 

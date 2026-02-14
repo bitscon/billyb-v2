@@ -39,6 +39,7 @@ from v2.core.agent.approval_router import ApprovalRouter
 from v2.core.agent.step_executor import StepExecutor
 from v2.core.agent.plan_state import PlanState
 from v2.core.memory.file_memory_store import FileMemoryStore
+from v2.core.content_capture import CapturedContent, InMemoryContentCaptureStore
 from v2.core.planning.plan import Plan
 from v2.core.agent.evaluation_router import EvaluationRouter
 from v2.core.evaluation.evaluation import Evaluation
@@ -637,6 +638,21 @@ def _dispatch_interaction(runtime: "BillyRuntime", text: str) -> Dict[str, Any]:
             "category": "governance/instruction",
             "route": "governance_instruction",
             "message": _GOVERNANCE_HANDOFF_RESPONSE,
+        }
+
+    if _is_content_generation_request(normalized):
+        return {
+            "category": "content generation",
+            "route": "content_generation",
+            "payload": normalized,
+        }
+
+    capture_request = _parse_content_capture_request(normalized)
+    if capture_request is not None:
+        return {
+            "category": "content capture",
+            "route": "content_capture",
+            "payload": capture_request,
         }
 
     preinspection_route = _classify_preinspection_route(normalized)
@@ -2303,6 +2319,28 @@ _READ_ONLY_INFO_PHRASES = (
     "fun fact",
 )
 
+_CONTENT_GENERATION_VERBS = (
+    "generate",
+    "draft",
+    "write",
+    "propose",
+)
+
+_CONTENT_GENERATION_EXECUTION_PATTERNS = (
+    r"\bsave\b",
+    r"\bwrite\s+file\b",
+    r"\bwrite\s+to\s+file\b",
+    r"\bdelete\b",
+    r"\brun\b",
+    r"\bexecute\b",
+)
+
+_CONTENT_CAPTURE_HELP = (
+    "Capture rejected: ambiguous reference. Use "
+    "'capture this as <label>', 'capture that as <label>', "
+    "or 'store the last response as <label>'."
+)
+
 _IDENTITY_LOCATION_PREFIXES = (
     "where are you",
     "where do you exist",
@@ -2463,6 +2501,58 @@ def _is_read_only_informational_request(text: str) -> bool:
     if any(phrase in normalized for phrase in _READ_ONLY_INFO_PHRASES):
         return True
     return False
+
+
+def _is_content_generation_request(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    if not normalized or normalized.startswith("/"):
+        return False
+    if _has_explicit_governed_trigger(normalized):
+        return False
+    if not any(re.search(rf"\b{re.escape(verb)}\b", normalized) for verb in _CONTENT_GENERATION_VERBS):
+        return False
+    if any(re.search(pattern, normalized) for pattern in _CONTENT_GENERATION_EXECUTION_PATTERNS):
+        return False
+    return True
+
+
+def _normalize_capture_label(raw: str) -> str:
+    text = raw.strip().strip(" .,:;\"'()[]{}")
+    text = re.sub(r"\s+", "-", text)
+    return text
+
+
+def _parse_content_capture_request(text: str) -> Dict[str, Any] | None:
+    normalized = re.sub(r"\s+", " ", text.strip())
+    lowered = normalized.lower()
+    if not lowered or lowered.startswith("/"):
+        return None
+
+    capture = re.fullmatch(r"capture (this|that) as (.+)", normalized, flags=re.IGNORECASE)
+    if capture is not None:
+        label = _normalize_capture_label(capture.group(2))
+        if not label:
+            return {"valid": False, "reason": _CONTENT_CAPTURE_HELP}
+        return {
+            "valid": True,
+            "label": label,
+            "reference": capture.group(1).lower(),
+        }
+
+    store_last = re.fullmatch(r"store the last response as (.+)", normalized, flags=re.IGNORECASE)
+    if store_last is not None:
+        label = _normalize_capture_label(store_last.group(1))
+        if not label:
+            return {"valid": False, "reason": _CONTENT_CAPTURE_HELP}
+        return {
+            "valid": True,
+            "label": label,
+            "reference": "last_response",
+        }
+
+    if lowered.startswith("capture ") or lowered.startswith("store "):
+        return {"valid": False, "reason": _CONTENT_CAPTURE_HELP}
+    return None
 
 
 def _classify_preinspection_route(text: str) -> tuple[str, str] | None:
@@ -3996,6 +4086,8 @@ class BillyRuntime:
             "name": "Chad McCormack",
             "role": "owner_operator",
         }
+        self._content_capture_store = InMemoryContentCaptureStore()
+        self._last_content_generation_response: Dict[str, str] | None = None
 
     def resolve_identity_question(self, input_str: str) -> str | None:
         """
@@ -4142,6 +4234,9 @@ class BillyRuntime:
             answer = str(answer)
         return self._identity_guard(prompt, answer)
 
+    def get_captured_content_last(self, count: int) -> List[Dict[str, Any]]:
+        return [item.to_dict() for item in self._content_capture_store.get_last(count)]
+
     def ask(self, prompt: str) -> str:
         """
         User-facing chat entrypoint.
@@ -4190,6 +4285,69 @@ class BillyRuntime:
                 "tool_calls": [],
                 "status": "success",
                 "trace_id": trace_id,
+            }
+        if interaction_route == "content_generation":
+            prompt = interaction_dispatch.get("payload", normalized_input)
+            if not isinstance(prompt, str) or not prompt.strip():
+                prompt = normalized_input
+            generated_text = self._llm_answer(prompt)
+            self._last_content_generation_response = {
+                "text": generated_text,
+                "origin_turn_id": trace_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            return {
+                "final_output": generated_text,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "content_generation",
+            }
+        if interaction_route == "content_capture":
+            request = interaction_dispatch.get("payload", {})
+            if not isinstance(request, dict) or not request.get("valid"):
+                return {
+                    "final_output": str((request or {}).get("reason") or _CONTENT_CAPTURE_HELP),
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                    "mode": "content_capture",
+                    "next_state": "ready_for_input",
+                }
+            source_record = self._last_content_generation_response
+            if source_record is None or not str(source_record.get("text", "")).strip():
+                return {
+                    "final_output": (
+                        "Capture rejected: no prior content-generation output is available "
+                        "for explicit capture."
+                    ),
+                    "tool_calls": [],
+                    "status": "error",
+                    "trace_id": trace_id,
+                    "mode": "content_capture",
+                    "next_state": "ready_for_input",
+                }
+
+            label = str(request.get("label", "")).strip()
+            captured = CapturedContent(
+                content_id=f"cc-{uuid.uuid4()}",
+                type="text",
+                source="llm",
+                text=str(source_record.get("text", "")),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                origin_turn_id=str(source_record.get("origin_turn_id", "")),
+                label=label,
+                session_id=str(trace_id),
+            )
+            self._content_capture_store.append(captured)
+            return {
+                "final_output": f"Captured content {captured.content_id} with label '{captured.label}'.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "content_capture",
+                "next_state": "ready_for_input",
+                "captured_content": captured.to_dict(),
             }
         if _is_approval_command(normalized_input):
             draft_id = _extract_approval_request(normalized_input)

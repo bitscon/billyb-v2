@@ -179,3 +179,130 @@ def test_governance_handoff_returns_deterministic_instruction_without_filesystem
     assert "use: /governance load <path>" in result["final_output"].lower()
     assert "invalid/ambiguous" not in result["final_output"].lower()
     assert result["tool_calls"] == []
+
+
+def test_content_generation_routes_to_review_only_conversation_without_execution(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+    observed = {}
+
+    def _fake_llm(prompt: str) -> str:
+        observed["prompt"] = prompt
+        return "drafted-content"
+
+    def _fail_loop(_user_input: str, _trace_id: str):
+        raise AssertionError("Content generation must not route to deterministic loop.")
+
+    def _fail_inspect(_query: str):
+        raise AssertionError("Content generation must not trigger inspection.")
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fake_llm)
+    monkeypatch.setattr(runtime_mod, "_run_deterministic_loop", _fail_loop)
+    monkeypatch.setattr(runtime_mod, "_inspect_barn", _fail_inspect)
+
+    result = runtime.run_turn("Propose a simple HTML homepage template.", {"trace_id": "trace-content-generation"})
+
+    assert result["status"] == "success"
+    assert result["mode"] == "content_generation"
+    assert result["final_output"] == "drafted-content"
+    assert result["tool_calls"] == []
+    assert observed["prompt"] == "Propose a simple HTML homepage template."
+    assert "approval" not in result["final_output"].lower()
+
+
+def test_generation_with_execution_terms_does_not_route_to_content_generation(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    def _fail_llm(_prompt: str) -> str:
+        raise AssertionError("Execution-oriented generation prompts must not route to LLM content generation.")
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fail_llm)
+
+    result = runtime.run_turn(
+        "Propose a template and write file index.html",
+        {"trace_id": "trace-content-generation-exec-mix"},
+    )
+
+    assert result["status"] == "error"
+    assert "invalid/ambiguous" in result["final_output"].lower()
+
+
+def test_action_rejection_behavior_remains_unchanged(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    def _fail_llm(_prompt: str) -> str:
+        raise AssertionError("Action rejection path must not route to conversational generation.")
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fail_llm)
+
+    result = runtime.run_turn("create a file", {"trace_id": "trace-action-reject-stable"})
+
+    assert result["status"] == "error"
+    assert "invalid/ambiguous" in result["final_output"].lower()
+
+
+def test_content_capture_works_immediately_after_content_generation(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+    observed = {"calls": 0}
+
+    def _fake_llm(prompt: str) -> str:
+        observed["calls"] += 1
+        if "propose" in prompt.lower():
+            return "<html><body><h1>Homepage</h1></body></html>"
+        return "unused"
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fake_llm)
+
+    generated = runtime.run_turn(
+        "Propose a simple homepage template.",
+        {"trace_id": "trace-capture-source"},
+    )
+    assert generated["status"] == "success"
+    assert generated["mode"] == "content_generation"
+
+    captured = runtime.run_turn(
+        "capture this as homepage_template",
+        {"trace_id": "trace-capture-explicit"},
+    )
+    assert captured["status"] == "success"
+    assert captured["mode"] == "content_capture"
+    assert captured["tool_calls"] == []
+    assert captured["next_state"] == "ready_for_input"
+    assert captured["captured_content"]["label"] == "homepage_template"
+    assert captured["captured_content"]["text"] == "<html><body><h1>Homepage</h1></body></html>"
+    assert observed["calls"] == 1
+
+
+def test_content_capture_rejects_ambiguous_reference(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    monkeypatch.setattr(runtime, "_llm_answer", lambda _prompt: "draft-output")
+
+    runtime.run_turn("draft an email welcome message", {"trace_id": "trace-capture-ambiguous-source"})
+    rejected = runtime.run_turn("capture it as welcome_email", {"trace_id": "trace-capture-ambiguous"})
+
+    assert rejected["status"] == "error"
+    assert rejected["mode"] == "content_capture"
+    assert "ambiguous reference" in rejected["final_output"].lower()
+    assert rejected["tool_calls"] == []
+    assert runtime.get_captured_content_last(10) == []
+
+
+def test_content_capture_does_not_occur_without_explicit_command(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+    observed = {"calls": 0}
+
+    def _fake_llm(prompt: str) -> str:
+        observed["calls"] += 1
+        if "draft" in prompt.lower():
+            return "Generated body text."
+        return "You are welcome."
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fake_llm)
+
+    runtime.run_turn("draft a short onboarding email", {"trace_id": "trace-capture-none-source"})
+    follow_up = runtime.run_turn("thanks", {"trace_id": "trace-capture-none-follow-up"})
+
+    assert follow_up["status"] == "success"
+    assert follow_up["tool_calls"] == []
+    assert runtime.get_captured_content_last(10) == []
+    assert observed["calls"] == 2
