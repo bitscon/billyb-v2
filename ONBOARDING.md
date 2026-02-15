@@ -22,8 +22,13 @@ Before doing work, read these files in order:
 8. `MATURITY_MODEL.md`
 9. `MATURITY_SYNC_CONTRACT.md`
 10. `v2/contracts/delegation_capabilities.yaml`
+11. `ONBOARDING_AGENTS.md`
 
-## 4. Current Operating Model (Level 26)
+## 4. Current Operating Model (Level 27)
+- A conversational front-end (secretary layer) runs before governed interpretation.
+- Casual conversation returns direct dialog and does not invoke execution governance.
+- Action-oriented and ambiguous action language escalates with a structured intent envelope.
+- The conversational layer has no execution authority and cannot mutate state.
 - Talk to Billy in normal language.
 - Billy routes every message through governed interpretation and policy.
 - Action requests do not execute immediately; Billy requests explicit approval.
@@ -58,7 +63,14 @@ Before doing work, read these files in order:
 - Workflow runs advance one governed step per explicit approval and preserve full audit trail.
 - Workflow cancellation is approval-gated and records partial-progress state.
 
-## 5. Approval Rules (Exact)
+## 5. How to Talk to Billy
+- Casual prompts (`tell me a joke`, `thanks`, `explain X`) stay in chat mode and do not escalate.
+- Execution prompts (`save`, `write`, `create`, `run`, `delete`, `refactor`, `delegate`, `workflow`, `project`) escalate to governed interpretation.
+- Mixed prompts (`that looks good; now save it`) escalate.
+- Ambiguous action prompts (`I want something done`) escalate and are handled as governed `CLARIFY`.
+- The governed interpreter remains the only place where policy and approval are enforced.
+
+## 6. Approval Rules (Exact)
 Allowed approval phrases (case-insensitive exact match):
 - `yes, proceed`
 - `approve`
@@ -71,14 +83,14 @@ Disallowed as approval:
 - `sure`
 - `sounds good`
 
-## 6. Deprecated Inputs
+## 7. Deprecated Inputs
 The following inputs are deprecated and informational only:
 - `/engineer`
 - `engineer mode`
 
 They must not block routing or execution governance.
 
-## 7. Example Conversations
+## 8. Example Conversations
 ### Example A: Natural-language action
 User: `save that joke in a text file in your home directory`
 Billy: approval request describing intent, risk, and exact approval phrase
@@ -177,11 +189,11 @@ Billy: executes next governed step and reports progress
 User: `workflow status`
 Billy: reports completed/pending steps and current state
 
-## 8. Freeze and Promotion Rule
+## 9. Freeze and Promotion Rule
 Phases approved as frozen infrastructure must not be tuned implicitly.
 Any behavioral change to frozen phases requires explicit promotion and acceptance.
 
-## 9. Docs Gate (Always)
+## 10. Docs Gate (Always)
 For every future phase:
 - Update `README.md` and `MATURITY.md`
 - Update onboarding docs when user-facing behavior changes

@@ -119,6 +119,10 @@
     "requires_approval": {
       "type": "boolean"
     },
+    "escalate": {
+      "type": "boolean",
+      "description": "Phase 27 conversational front-end signal indicating whether the utterance should be forwarded to governed interpretation."
+    },
     "policy": {
       "type": "object",
       "additionalProperties": false,
@@ -149,5 +153,42 @@
     "next_prompt": {
       "type": "string"
     }
-  }
+  },
+  "examples": [
+    {
+      "utterance": "save this idea to a file",
+      "lane": "PLAN",
+      "intent": "write_file",
+      "entities": [
+        {
+          "name": "path",
+          "value": "idea.txt"
+        }
+      ],
+      "confidence": 0.9,
+      "requires_approval": true,
+      "escalate": true,
+      "policy": {
+        "risk_level": "medium",
+        "allowed": true,
+        "reason": "Action request routed to governed execution path."
+      },
+      "next_prompt": ""
+    },
+    {
+      "utterance": "tell me a joke",
+      "lane": "CHAT",
+      "intent": "chat.general",
+      "entities": [],
+      "confidence": 0.8,
+      "requires_approval": false,
+      "escalate": false,
+      "policy": {
+        "risk_level": "low",
+        "allowed": true,
+        "reason": "Conversational request remains in chat mode."
+      },
+      "next_prompt": ""
+    }
+  ]
 }

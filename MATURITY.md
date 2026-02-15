@@ -3,14 +3,14 @@ Release
 
 Tag: maturity-level-25
 
-Status: Level 26 — Execution Pipelines & Repeatable Workflows draft/in progress (not frozen)
+Status: Level 27 — Conversational Front-End & Interpreter Gate draft/in progress (not frozen)
 
 Current Maturity
 
-Billy is operating at Level 26 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, governed delegation/sub-agent orchestration contracts, and project-scoped repeatable workflow orchestration.
+Billy is operating at Level 27 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, governed delegation/sub-agent orchestration contracts, project-scoped repeatable workflow orchestration, and a conversational front-end secretary gate that separates chat from governed escalation.
 
 Current Working Edge:
-Level 26 is the active draft/in-progress edge. Levels 1-25 remain frozen.
+Level 27 is the active draft/in-progress edge. Levels 1-25 remain frozen.
 
 Phase Summary (1–9)
 
@@ -298,6 +298,23 @@ Workflow run status/cancellation semantics with auditable partial progress and p
 
 Status:
 Draft/in-progress and not frozen. Workflow orchestration remains constrained to existing policy, approval, execution, and scope boundaries with no new authority paths.
+
+Maturity Level 27 — Conversational Front-End & Interpreter Gate (Draft / In Progress)
+
+Capabilities:
+
+Secretary-style conversational interpreter in front of governed execution routing
+
+Deterministic chat-vs-action split with explicit escalation payloads (`escalate: true|false`)
+
+Escalation trigger matching for execution-oriented natural language (`save`, `write`, `create`, `run`, `execute`, `delete`, `refactor`, `delegate`, `workflow`, `project`, phrase patterns like `make file`/`put in sandbox`)
+
+Ambiguous non-casual action requests escalated into governed `CLARIFY` handling instead of silent rejection
+
+Runtime dispatch integration that forwards only escalated turns into Billy’s governed interpreter and returns chat responses directly for non-escalated turns
+
+Status:
+Draft/in-progress and not frozen. The conversational layer remains non-authoritative and cannot execute, mutate state, bypass policy, bypass approvals, or bypass contract-bound execution safeguards.
 
 Freeze Policy
 

@@ -70,12 +70,13 @@ Levels in this file are conceptual macro-levels. Implementation release levels a
 Billy currently fits **Conceptual Level 4 — Structured Workflow**.
 
 Implementation crosswalk:
-- Current implementation maturity (`MATURITY.md`): **Level 18 — Content Generation Intent Class**
-- Mapping rule: implementation Levels `9` through `18` map to conceptual Level `4`
+- Current implementation maturity (`MATURITY.md`): **Level 27 — Conversational Front-End & Interpreter Gate (draft/in progress)**
+- Mapping rule: implementation Levels `9` through `27` map to conceptual Level `4`
 - Conceptual Levels `5` and `6` remain future-state targets
 
 Justification:
 - Governed reasoning, drafting, approval, application, tool definition, tool approval, registration, and confirmation-gated execution are in place.
+- Conversational front-end secretary routing is in place while governed policy/approval/execution authority remains unchanged.
 - Authority transitions are explicit and auditable.
 - Registration and visibility are separated from executability.
 - Autonomous operation is not enabled.

@@ -26,6 +26,7 @@ try:
 except ImportError:
     llm_api = None
 from .charter import load_charter
+from v2.core.conversation_layer import process_conversational_turn, run_governed_interpreter
 from v2.core.contracts.loader import load_schema, ContractViolation
 from v2.core.tool_runner.docker_runner import DockerRunner
 from v2.core.trace.file_trace_sink import FileTraceSink
@@ -4260,10 +4261,58 @@ class BillyRuntime:
         assert_trace_id(trace_id)
         assert_explicit_memory_write(user_input)
         normalized_input = user_input.strip()
+        lowered_input = normalized_input.lower()
+        secretary_result: Dict[str, Any] | None = None
+        if (
+            normalized_input
+            and _legacy_interaction_reason(normalized_input) is None
+            and not _has_explicit_governed_trigger(normalized_input)
+            and not _is_governance_handoff_instruction(normalized_input)
+            and not _is_explicit_inspection_request(normalized_input)
+            and not lowered_input.startswith("claim:")
+            and lowered_input not in {"ignored", "continue"}
+        ):
+            secretary_result = process_conversational_turn(normalized_input)
+            if bool(secretary_result.get("escalate")):
+                governed_input = secretary_result.get("intent_envelope", {})
+                governed_result = run_governed_interpreter(
+                    governed_input if isinstance(governed_input, dict) else {}
+                )
+                raw_governed = governed_result.get("governed_result", {})
+                result_type = str((raw_governed or {}).get("type", ""))
+                error_types = {
+                    "approval_rejected",
+                    "approval_expired",
+                    "execution_rejected",
+                    "plan_rejected",
+                }
+                return {
+                    "final_output": str(governed_result.get("response", "")),
+                    "tool_calls": [],
+                    "status": "error" if result_type in error_types else "success",
+                    "trace_id": trace_id,
+                    "mode": "governed_interpreter",
+                    "governed_result": raw_governed,
+                    "intent": str(governed_result.get("intent", "")),
+                }
+
         interaction_dispatch = _dispatch_interaction(self, normalized_input)
         interaction_route = interaction_dispatch.get("route")
 
         if interaction_route == "reject":
+            if (
+                interaction_dispatch.get("category") == "invalid/ambiguous"
+                and isinstance(secretary_result, dict)
+                and not bool(secretary_result.get("escalate"))
+            ):
+                return {
+                    "final_output": str(secretary_result.get("chat_response", "I can help with that.")),
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                    "mode": "conversation_layer",
+                }
+
             return {
                 "final_output": interaction_dispatch.get("message", "Interaction rejected."),
                 "tool_calls": [],

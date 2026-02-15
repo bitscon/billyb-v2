@@ -4,12 +4,27 @@ Billy is a protocol-driven assistant with explicit authority boundaries.
 All user input is processed through a governed conversational pipeline.
 
 ## Current Status
-- Maturity Level: 26 (`Execution Pipelines & Repeatable Workflows`)
+- Maturity Level: 27 (`Conversational Front-End & Interpreter Gate`)
 - Infrastructure freeze: Phases 1-25 are frozen unless explicitly promoted
-- Conversational behavior: natural language is first-class; legacy engineer mode is deprecated
+- Conversational behavior: natural language is first-class; a secretary-style front-end separates chat from governed execution escalation
 
 ## How to Use
 Use normal language. Billy routes requests through interpretation, policy, approval, and contract-bound execution.
+
+## Conversational Layer (Phase 27)
+- A front-end conversational interpreter runs first on natural-language turns.
+- Casual chat stays in chat mode (`escalate: false`) and returns dialog output.
+- Execution-oriented requests return `escalate: true` with a structured Billy-compatible intent envelope.
+- Ambiguous action language is escalated to Billy’s governed interpreter for `CLARIFY`.
+- The conversational layer does not execute tools, mutate state, or grant authority.
+- Policy, risk, approval, and contract execution remain enforced only in Billy’s governed interpreter.
+
+Examples:
+- `tell me a joke` -> chat response, no escalation
+- `thanks for the help` -> chat response, no escalation
+- `save this idea to a file` -> escalation with intent envelope
+- `that looks good; now save it` -> escalation
+- `I want something done` -> escalation for governed `CLARIFY`
 
 Examples:
 - `save that joke in a text file in your home directory`
@@ -181,5 +196,6 @@ Implemented and frozen progression:
 - Phase 24: milestone lifecycle, project completion checks, governed finalization, and governed archival
 - Phase 25: governed delegation contracts and approval-gated sub-agent orchestration with captured results
 - Phase 26: project-scoped workflow orchestration with dry-run preview, approval-gated runs, status, and cancellation
+- Phase 27: conversational front-end secretary gate with explicit escalation envelopes and governed interpreter handoff
 
 See `MATURITY.md` for freeze policy, docs gate, and promotion state.

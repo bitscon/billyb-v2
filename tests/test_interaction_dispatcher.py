@@ -50,13 +50,17 @@ def test_explicit_inspection_input_routes_to_deterministic_loop(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "user_input",
+    "user_input, expected_mode",
     [
-        "create a file",
-        "service_foo_bar_12345",
+        ("create a file", "governed_interpreter"),
+        ("service_foo_bar_12345", "governed_interpreter"),
     ],
 )
-def test_invalid_ambiguous_input_rejects_without_inspection(monkeypatch, user_input: str):
+def test_invalid_ambiguous_input_routes_through_conversational_layer(
+    monkeypatch,
+    user_input: str,
+    expected_mode: str,
+):
     runtime = runtime_mod.BillyRuntime(config={})
 
     def _fail_loop(_user_input: str, _trace_id: str):
@@ -70,8 +74,8 @@ def test_invalid_ambiguous_input_rejects_without_inspection(monkeypatch, user_in
 
     result = runtime.run_turn(user_input, {"trace_id": "trace-invalid"})
 
-    assert result["status"] == "error"
-    assert "invalid/ambiguous" in result["final_output"].lower()
+    assert result["status"] == "success"
+    assert result["mode"] == expected_mode
 
 
 def test_identity_location_question_routes_to_read_only_without_filesystem_access(monkeypatch):
@@ -134,7 +138,7 @@ def test_read_only_informational_question_routes_to_llm(monkeypatch):
         "what services are running on this server?",
     ],
 )
-def test_read_only_informational_blocklist_rejects_unsafe_or_ambiguous_prompts(monkeypatch, user_input: str):
+def test_read_only_informational_prompts_use_conversational_layer(monkeypatch, user_input: str):
     runtime = runtime_mod.BillyRuntime(config={})
 
     def _fail_llm(_prompt: str) -> str:
@@ -144,8 +148,9 @@ def test_read_only_informational_blocklist_rejects_unsafe_or_ambiguous_prompts(m
 
     result = runtime.run_turn(user_input, {"trace_id": "trace-read-only-reject"})
 
-    assert result["status"] == "error"
-    assert "invalid/ambiguous" in result["final_output"].lower()
+    assert result["status"] == "success"
+    assert result["mode"] == "conversation_layer"
+    assert "invalid/ambiguous" not in result["final_output"].lower()
 
 
 @pytest.mark.parametrize(
@@ -222,11 +227,12 @@ def test_generation_with_execution_terms_does_not_route_to_content_generation(mo
         {"trace_id": "trace-content-generation-exec-mix"},
     )
 
-    assert result["status"] == "error"
-    assert "invalid/ambiguous" in result["final_output"].lower()
+    assert result["status"] == "success"
+    assert result["mode"] == "governed_interpreter"
+    assert "invalid/ambiguous" not in result["final_output"].lower()
 
 
-def test_action_rejection_behavior_remains_unchanged(monkeypatch):
+def test_action_request_escalates_to_governed_interpreter(monkeypatch):
     runtime = runtime_mod.BillyRuntime(config={})
 
     def _fail_llm(_prompt: str) -> str:
@@ -236,8 +242,8 @@ def test_action_rejection_behavior_remains_unchanged(monkeypatch):
 
     result = runtime.run_turn("create a file", {"trace_id": "trace-action-reject-stable"})
 
-    assert result["status"] == "error"
-    assert "invalid/ambiguous" in result["final_output"].lower()
+    assert result["status"] == "success"
+    assert result["mode"] == "governed_interpreter"
 
 
 def test_content_capture_works_immediately_after_content_generation(monkeypatch):

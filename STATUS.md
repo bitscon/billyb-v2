@@ -1,8 +1,8 @@
 # Billy Status Snapshot
 
 ## Current Maturity
-- Level: 26 (`Execution Pipelines & Repeatable Workflows`)
-- Intended release tag: `maturity-level-26`
+- Level: 27 (`Conversational Front-End & Interpreter Gate`)
+- Intended release tag: `maturity-level-27`
 - Conceptual ladder placement (`MATURITY_MODEL.md`): Level 4 (`Structured Workflow`)
 
 ## Frozen Phases
@@ -16,6 +16,7 @@
 - Project lifecycle now includes goals, tasks, milestones, completion checks, finalization, and archival.
 - Delegation is governed via static capability contracts and approval-gated orchestration.
 - Workflow orchestration is project-scoped, previewable, approval-gated, and step-audited.
+- Conversational front-end routing now separates chat (`escalate: false`) from governed escalation (`escalate: true`) before interpreter execution.
 
 ## Approval Contract
 Allowed approval phrases (case-insensitive exact match):
