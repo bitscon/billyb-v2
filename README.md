@@ -4,10 +4,11 @@ Billy is a protocol-driven assistant with explicit authority boundaries.
 All user input is processed through a governed conversational pipeline.
 
 ## Current Status
-- Maturity Level: 27 (`Conversational Front-End & Interpreter Gate`)
-- Infrastructure freeze: Phases 1-27 are frozen unless explicitly promoted
-- Frozen release tag: `maturity-level-27`
+- Maturity Level: 28 (`Explicit Read-Only Inspection Capabilities`)
+- Infrastructure freeze: Phases 1-28 are frozen unless explicitly promoted
+- Frozen release tag: `maturity-level-28`
 - Conversational behavior: natural language is first-class; a secretary-style front-end separates chat from governed execution escalation
+- Inspection behavior: explicit contract-bound read-only inspection is available for file/directory observation without expanding authority
 
 ## How to Use
 Use normal language. Billy routes requests through interpretation, policy, approval, and contract-bound execution.
@@ -21,6 +22,14 @@ Use normal language. Billy routes requests through interpretation, policy, appro
 - Path mentions and read/show-style phrasing in chat do not grant filesystem/tool authority by default.
 - Explicit structured governed requests continue to escalate through the interpreter.
 - Policy, risk, approval, and contract execution remain enforced only in Billy’s governed interpreter.
+
+## Explicit Inspection Layer (Phase 28)
+- `inspect_file` and `inspect_directory` are explicit read-only inspection capabilities under contract.
+- Inspection access is structured-intent-only and path-trust constrained (workspace allowlist + canonicalization + traversal rejection).
+- Symlinks are not followed; directory symlink results are metadata-only.
+- Outputs are bounded (excerpt/page/depth/hash limits) with deterministic error contracts.
+- Inspection is authority-sealed: no auto-routing, no escalation, no tool chaining, no conversational context injection.
+- Phase 27 conversational non-authority guarantees remain unchanged.
 
 Examples:
 - `tell me a joke` -> chat response, no escalation
@@ -200,5 +209,6 @@ Implemented and frozen progression:
 - Phase 25: governed delegation contracts and approval-gated sub-agent orchestration with captured results
 - Phase 26: project-scoped workflow orchestration with dry-run preview, approval-gated runs, status, and cancellation
 - Phase 27: conversational front-end secretary gate with explicit escalation envelopes and governed interpreter handoff
+- Phase 28: explicit read-only inspection capabilities (`inspect_file`, `inspect_directory`) with authority-sealed observation boundaries
 
 See `MATURITY.md` for freeze policy, docs gate, and promotion state.

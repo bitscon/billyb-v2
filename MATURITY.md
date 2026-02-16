@@ -1,16 +1,16 @@
 Billy Maturity Snapshot (Authoritative)
 Release
 
-Tag: maturity-level-27
+Tag: maturity-level-28
 
-Status: Level 27 — Conversational Front-End & Interpreter Gate (frozen)
+Status: Level 28 — Explicit Read-Only Inspection Capabilities (frozen)
 
 Current Maturity
 
-Billy is operating at Level 27 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, governed delegation/sub-agent orchestration contracts, project-scoped repeatable workflow orchestration, and a conversational front-end secretary gate that separates chat from governed escalation.
+Billy is operating at Level 28 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, governed delegation/sub-agent orchestration contracts, project-scoped repeatable workflow orchestration, a conversational front-end secretary gate that separates chat from governed escalation, and explicit contract-bound read-only inspection capabilities for file and directory observation.
 
 Current Working Edge:
-Level 27 is the current frozen baseline. Levels 1-27 remain frozen.
+Level 28 is the current frozen baseline. Levels 1-28 remain frozen.
 
 Phase Summary (1–9)
 
@@ -317,6 +317,25 @@ Runtime dispatch integration that forwards only escalated turns into Billy’s g
 
 Status:
 Frozen infrastructure. The conversational layer remains non-authoritative and cannot execute, mutate state, bypass policy, bypass approvals, or bypass contract-bound execution safeguards.
+
+Maturity Level 28 — Explicit Read-Only Inspection Capabilities (Frozen)
+
+Capabilities:
+
+First-class explicit read-only inspection tools (`inspect_file`, `inspect_directory`) with structured intent-only access
+
+Allowlist-root path trust model with traversal rejection, canonicalization, and out-of-scope containment enforcement
+
+Symlink-safe behavior: no symlink traversal for inspection reads, metadata-only symlink handling in directory listings
+
+Bounded observation outputs including excerpt limits, directory depth/page bounds, and optional size-limited full-file hashing
+
+Deterministic error model for inspection failures (`NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_ENCODING`, `PATH_OUTSIDE_ALLOWLIST`, `PATH_TRAVERSAL_FORBIDDEN`, `SYMLINK_NOT_ALLOWED`, `HASH_LIMIT_EXCEEDED`, `INVALID_ARGUMENT`)
+
+Authority boundary reinforcement: inspection outputs are caller-only and cannot auto-trigger routing, escalation, or tool invocation
+
+Status:
+Frozen infrastructure. Inspection remains strictly read-only, non-escalating, non-mutating, and non-authoritative in conversational context.
 
 Freeze Policy
 

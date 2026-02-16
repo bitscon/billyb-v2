@@ -24,13 +24,16 @@ Before doing work, read these files in order:
 10. `v2/contracts/delegation_capabilities.yaml`
 11. `ONBOARDING_AGENTS.md`
 
-## 4. Current Operating Model (Level 27)
-- Level 27 is frozen baseline behavior; changes require explicit forward promotion.
+## 4. Current Operating Model (Level 28)
+- Level 28 is frozen baseline behavior; changes require explicit forward promotion.
 - A conversational front-end (secretary layer) runs before governed interpretation.
 - Casual conversation returns direct dialog and does not invoke execution governance.
 - Action-oriented and ambiguous action language escalates with a structured intent envelope.
 - The conversational layer has no execution authority and cannot mutate state.
 - Read/show/view/inspect phrasing in chat does not grant filesystem or tool authority unless escalation is explicit and structured.
+- Explicit inspection capabilities are now frozen: `inspect_file` and `inspect_directory`.
+- Inspection is read-only and bounded by contract (allowlist paths, traversal rejection, no symlink traversal, deterministic error model).
+- Inspection output is caller-only and cannot auto-trigger routing, escalation, tool chaining, or conversational context mutation.
 - Talk to Billy in normal language.
 - Billy routes every message through governed interpretation and policy.
 - Action requests do not execute immediately; Billy requests explicit approval.
