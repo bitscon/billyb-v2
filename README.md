@@ -4,11 +4,12 @@ Billy is a protocol-driven assistant with explicit authority boundaries.
 All user input is processed through a governed conversational pipeline.
 
 ## Current Status
-- Maturity Level: 28 (`Explicit Read-Only Inspection Capabilities`)
-- Infrastructure freeze: Phases 1-28 are frozen unless explicitly promoted
-- Frozen release tag: `maturity-level-28`
+- Maturity Level: 29 (`Inspection Dispatch Boundary`)
+- Infrastructure freeze: Phases 1-29 are frozen unless explicitly promoted
+- Frozen release tag: `maturity-level-29`
 - Conversational behavior: natural language is first-class; a secretary-style front-end separates chat from governed execution escalation
 - Inspection behavior: explicit contract-bound read-only inspection is available for file/directory observation without expanding authority
+- Inspection dispatch behavior: inspection results are inert unless explicitly bound; no ambient context carryover into reasoning
 
 ## How to Use
 Use normal language. Billy routes requests through interpretation, policy, approval, and contract-bound execution.
@@ -30,6 +31,13 @@ Use normal language. Billy routes requests through interpretation, policy, appro
 - Outputs are bounded (excerpt/page/depth/hash limits) with deterministic error contracts.
 - Inspection is authority-sealed: no auto-routing, no escalation, no tool chaining, no conversational context injection.
 - Phase 27 conversational non-authority guarantees remain unchanged.
+
+## Inspection Dispatch Boundary (Phase 29)
+- Phase 29 is specification-only and frozen by design.
+- Inspection results are inert caller-bound data unless explicitly bound via structured references (`inspection_result_id`, source tool, immutable payload reference, scope/lifetime/owner).
+- Inspection-to-reasoning handoff requires explicit structured binding; no implicit carryover into prompts, memory, or interpreter state.
+- Inspection outputs cannot auto-trigger summarization, planning, transformation, delegation, execution, or authority escalation.
+- Phase 27 and Phase 28 guarantees remain unchanged.
 
 Examples:
 - `tell me a joke` -> chat response, no escalation
@@ -210,5 +218,6 @@ Implemented and frozen progression:
 - Phase 26: project-scoped workflow orchestration with dry-run preview, approval-gated runs, status, and cancellation
 - Phase 27: conversational front-end secretary gate with explicit escalation envelopes and governed interpreter handoff
 - Phase 28: explicit read-only inspection capabilities (`inspect_file`, `inspect_directory`) with authority-sealed observation boundaries
+- Phase 29: inspection dispatch boundary (specification-only) requiring explicit binding for inspection-to-reasoning consumption
 
 See `MATURITY.md` for freeze policy, docs gate, and promotion state.

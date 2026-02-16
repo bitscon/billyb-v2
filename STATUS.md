@@ -1,13 +1,13 @@
 # Billy Status Snapshot
 
 ## Current Maturity
-- Level: 28 (`Explicit Read-Only Inspection Capabilities`)
-- Current frozen release tag: `maturity-level-28`
-- Phase 28 freeze state: frozen
+- Level: 29 (`Inspection Dispatch Boundary`)
+- Current frozen release tag: `maturity-level-29`
+- Phase 29 freeze state: frozen (specification-only)
 - Conceptual ladder placement (`MATURITY_MODEL.md`): Level 4 (`Structured Workflow`)
 
 ## Frozen Phases
-- Phases 1-28 are frozen infrastructure.
+- Phases 1-29 are frozen infrastructure.
 - Any behavioral change requires explicit maturity promotion and acceptance.
 
 ## Current Governance Posture
@@ -19,8 +19,10 @@
 - Workflow orchestration is project-scoped, previewable, approval-gated, and step-audited.
 - Conversational front-end routing now separates chat (`escalate: false`) from governed escalation (`escalate: true`) before interpreter execution.
 - Explicit inspection capabilities are read-only, bounded, symlink-safe, and authority-sealed (`inspect_file`, `inspect_directory`).
+- Inspection dispatch boundary is explicit and binding-driven: inspection outputs are inert unless explicitly bound, with no ambient context carryover, silent persistence, or authority escalation.
 - Phase 27 promotion evidence is recorded in `PHASE27_PROMOTION_CHECKLIST.md`.
 - Phase 28 promotion evidence is recorded in `docs/PHASE28_PROMOTION_CHECKLIST.md`.
+- Phase 29 promotion evidence is recorded in `docs/PHASE29_PROMOTION_CHECKLIST.md`.
 
 ## Approval Contract
 Allowed approval phrases (case-insensitive exact match):

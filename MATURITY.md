@@ -1,16 +1,16 @@
 Billy Maturity Snapshot (Authoritative)
 Release
 
-Tag: maturity-level-28
+Tag: maturity-level-29
 
-Status: Level 28 — Explicit Read-Only Inspection Capabilities (frozen)
+Status: Level 29 — Inspection Dispatch Boundary (frozen)
 
 Current Maturity
 
-Billy is operating at Level 28 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, governed delegation/sub-agent orchestration contracts, project-scoped repeatable workflow orchestration, a conversational front-end secretary gate that separates chat from governed escalation, and explicit contract-bound read-only inspection capabilities for file and directory observation.
+Billy is operating at Level 29 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, governed delegation/sub-agent orchestration contracts, project-scoped repeatable workflow orchestration, a conversational front-end secretary gate that separates chat from governed escalation, explicit contract-bound read-only inspection capabilities for file and directory observation, and a formal inspection dispatch boundary that requires explicit structured binding before inspection data can be consumed by downstream reasoning.
 
 Current Working Edge:
-Level 28 is the current frozen baseline. Levels 1-28 remain frozen.
+Level 29 is the current frozen baseline. Levels 1-29 remain frozen.
 
 Phase Summary (1–9)
 
@@ -336,6 +336,23 @@ Authority boundary reinforcement: inspection outputs are caller-only and cannot 
 
 Status:
 Frozen infrastructure. Inspection remains strictly read-only, non-escalating, non-mutating, and non-authoritative in conversational context.
+
+Maturity Level 29 — Inspection Dispatch Boundary (Frozen)
+
+Capabilities:
+
+Formal inspection-result binding contract for downstream consumption (`inspection_result_id`, source tool, immutable payload reference, scope/lifetime/owner fields)
+
+Inspection outputs treated as inert caller-bound data until explicitly bound for reasoning use
+
+Routing boundary requiring explicit structured binding from inspection to reasoning; no implicit carryover into prompts, memory, or interpreter state
+
+Negative guarantees that inspection outputs cannot trigger execution, delegation, authority escalation, auto-summarization, or silent persistence
+
+Cross-turn reuse guarded by explicit rebinding with scope/lifetime/owner validation
+
+Status:
+Frozen specification infrastructure. Phase 29 introduces no runtime behavior changes and preserves Phase 27 conversational non-authority and Phase 28 read-only/non-escalating inspection guarantees.
 
 Freeze Policy
 
