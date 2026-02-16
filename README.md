@@ -5,7 +5,8 @@ All user input is processed through a governed conversational pipeline.
 
 ## Current Status
 - Maturity Level: 27 (`Conversational Front-End & Interpreter Gate`)
-- Infrastructure freeze: Phases 1-25 are frozen unless explicitly promoted
+- Infrastructure freeze: Phases 1-27 are frozen unless explicitly promoted
+- Frozen release tag: `maturity-level-27`
 - Conversational behavior: natural language is first-class; a secretary-style front-end separates chat from governed execution escalation
 
 ## How to Use
@@ -17,6 +18,8 @@ Use normal language. Billy routes requests through interpretation, policy, appro
 - Execution-oriented requests return `escalate: true` with a structured Billy-compatible intent envelope.
 - Ambiguous action language is escalated to Billy’s governed interpreter for `CLARIFY`.
 - The conversational layer does not execute tools, mutate state, or grant authority.
+- Path mentions and read/show-style phrasing in chat do not grant filesystem/tool authority by default.
+- Explicit structured governed requests continue to escalate through the interpreter.
 - Policy, risk, approval, and contract execution remain enforced only in Billy’s governed interpreter.
 
 Examples:

@@ -551,7 +551,7 @@ def _is_explicit_inspection_request(text: str) -> bool:
         return False
     if normalized.startswith("locate/inspect:"):
         return True
-    if normalized.startswith(("locate ", "find ", "check ", "list ", "show ")):
+    if normalized.startswith(("locate ", "find ", "check ")):
         return True
     return normalized.startswith("where is ") or normalized.startswith("where's ")
 
@@ -2468,7 +2468,7 @@ def _is_governance_handoff_instruction(text: str) -> bool:
     normalized = re.sub(r"\s+", " ", text.strip().lower())
     if not normalized or normalized.startswith("/"):
         return False
-    return any(phrase in normalized for phrase in _GOVERNANCE_HANDOFF_PHRASES)
+    return normalized in _GOVERNANCE_HANDOFF_PHRASES
 
 
 def _is_read_only_informational_request(text: str) -> bool:

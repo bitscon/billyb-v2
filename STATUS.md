@@ -2,11 +2,12 @@
 
 ## Current Maturity
 - Level: 27 (`Conversational Front-End & Interpreter Gate`)
-- Intended release tag: `maturity-level-27`
+- Current frozen release tag: `maturity-level-27`
+- Phase 27 freeze state: frozen
 - Conceptual ladder placement (`MATURITY_MODEL.md`): Level 4 (`Structured Workflow`)
 
 ## Frozen Phases
-- Phases 1-25 are frozen infrastructure.
+- Phases 1-27 are frozen infrastructure.
 - Any behavioral change requires explicit maturity promotion and acceptance.
 
 ## Current Governance Posture
@@ -17,6 +18,7 @@
 - Delegation is governed via static capability contracts and approval-gated orchestration.
 - Workflow orchestration is project-scoped, previewable, approval-gated, and step-audited.
 - Conversational front-end routing now separates chat (`escalate: false`) from governed escalation (`escalate: true`) before interpreter execution.
+- Phase 27 promotion evidence is recorded in `PHASE27_PROMOTION_CHECKLIST.md`.
 
 ## Approval Contract
 Allowed approval phrases (case-insensitive exact match):

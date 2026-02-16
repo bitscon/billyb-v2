@@ -55,6 +55,15 @@ _AMBIGUOUS_ACTION_PHRASES = (
     "handle this",
     "take care of this",
 )
+_READ_ONLY_VERB_PREFIXES = (
+    "read ",
+    "show ",
+    "view ",
+    "inspect ",
+)
+_STRUCTURED_READ_FILE_PATTERN = re.compile(
+    r"read file (?P<path>.+?)(?: from (?P<loc>my home directory|home directory|my workspace|workspace|sandbox))?$"
+)
 
 
 def _normalize_utterance(utterance: str) -> str:
@@ -100,6 +109,24 @@ def _is_ambiguous_action_request(utterance: str) -> bool:
     )
 
 
+def _is_non_authoritative_read_language(utterance: str) -> bool:
+    lowered = _compact_text(utterance)
+    if not lowered:
+        return False
+    return any(lowered.startswith(prefix) for prefix in _READ_ONLY_VERB_PREFIXES)
+
+
+def _is_explicit_structured_read_file_request(utterance: str) -> bool:
+    lowered = _compact_text(utterance)
+    if not lowered:
+        return False
+    matched = _STRUCTURED_READ_FILE_PATTERN.fullmatch(lowered)
+    if matched is None:
+        return False
+    path_value = str(matched.group("path") or "").strip()
+    return path_value not in {"", "this", "that", "it", "current", "current file", "file"}
+
+
 def _chat_response(utterance: str) -> str:
     lowered = _compact_text(utterance)
     if "joke" in lowered:
@@ -130,8 +157,16 @@ def process_conversational_turn(utterance: str) -> Dict[str, Any]:
     has_trigger = _has_escalation_trigger(normalized)
     casual = _is_casual_chat(normalized)
     ambiguous_action = _is_ambiguous_action_request(normalized)
+    read_only_language = _is_non_authoritative_read_language(normalized)
+    structured_read_request = _is_explicit_structured_read_file_request(normalized)
 
     if casual and not has_trigger:
+        return {
+            "escalate": False,
+            "chat_response": _chat_response(normalized),
+        }
+
+    if read_only_language and not has_trigger and not ambiguous_action and not structured_read_request:
         return {
             "escalate": False,
             "chat_response": _chat_response(normalized),

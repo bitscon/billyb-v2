@@ -2,7 +2,8 @@
 This file is the current-state handoff for Billy v2. It is the authoritative snapshot of where work stands now, what is frozen, what is deferred, and how to resume safely after context loss.
 
 ## Current System Status
-- Declared maturity: Level 27 (`Conversational Front-End & Interpreter Gate`), intended tag `maturity-level-27`.
+- Declared maturity baseline: Level 27 (`Conversational Front-End & Interpreter Gate`, frozen).
+- Current frozen release tag: `maturity-level-27` (Phases 1-27).
 - All core governed modes are implemented and active in the runtime boundary model.
 - Execution power is explicitly gated; no implicit execution paths are allowed by design.
 - Code and tool actions are approval-driven, hash-validated, and confirmation-gated where required.
@@ -34,11 +35,11 @@ Frozen items must not be modified implicitly. Any change to frozen infrastructur
 These are conscious deferrals, not accidental omissions.
 
 ## Last Major Milestone
-The most recent implemented working edge is Level 27 (`Conversational Front-End & Interpreter Gate`, draft/in-progress). This adds a secretary-style conversational layer that classifies chat vs escalation while preserving governed enforcement boundaries.
+Phase 27 (`Conversational Front-End & Interpreter Gate`) is now frozen. The secretary-style conversational layer classifies chat vs escalation while preserving governed enforcement boundaries.
 
 ## Recommended Next Directions
-- Formalize Phase 27 promotion criteria and freeze acceptance evidence.
-- Expand conversational escalation patterns with contract-backed fixtures while preserving no-authority guarantees.
+- Begin Phase 28 planning as a forward-only maturity increment.
+- Preserve Phase 27 frozen non-authority guarantees while introducing new capabilities only through explicit promotion.
 - Keep policy, approval, and execution authority exclusively in governed interpreter paths.
 - Continue maturity-sync hygiene (`MATURITY.md`, `STATUS.md`, `STATE.md`, `ONBOARDING.md`) in each phase increment.
 

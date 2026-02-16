@@ -25,10 +25,12 @@ Before doing work, read these files in order:
 11. `ONBOARDING_AGENTS.md`
 
 ## 4. Current Operating Model (Level 27)
+- Level 27 is frozen baseline behavior; changes require explicit forward promotion.
 - A conversational front-end (secretary layer) runs before governed interpretation.
 - Casual conversation returns direct dialog and does not invoke execution governance.
 - Action-oriented and ambiguous action language escalates with a structured intent envelope.
 - The conversational layer has no execution authority and cannot mutate state.
+- Read/show/view/inspect phrasing in chat does not grant filesystem or tool authority unless escalation is explicit and structured.
 - Talk to Billy in normal language.
 - Billy routes every message through governed interpretation and policy.
 - Action requests do not execute immediately; Billy requests explicit approval.
@@ -66,6 +68,7 @@ Before doing work, read these files in order:
 ## 5. How to Talk to Billy
 - Casual prompts (`tell me a joke`, `thanks`, `explain X`) stay in chat mode and do not escalate.
 - Execution prompts (`save`, `write`, `create`, `run`, `delete`, `refactor`, `delegate`, `workflow`, `project`) escalate to governed interpretation.
+- Read-only phrasing without explicit structured escalation (`read`, `show`, `view`, `inspect`) stays non-authoritative chat.
 - Mixed prompts (`that looks good; now save it`) escalate.
 - Ambiguous action prompts (`I want something done`) escalate and are handled as governed `CLARIFY`.
 - The governed interpreter remains the only place where policy and approval are enforced.

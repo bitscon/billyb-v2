@@ -80,6 +80,27 @@ def test_chat_no_governed_invocation():
     assert convo["escalate"] is False
 
 
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "read ONBOARDING.md",
+        "show me /etc/passwd",
+        "read this file",
+    ],
+)
+def test_read_like_language_stays_chat_only_without_escalation(utterance: str):
+    result = process_conversational_turn(utterance)
+    assert result["escalate"] is False
+    assert "chat_response" in result
+    assert "intent_envelope" not in result
+
+
+def test_explicit_structured_read_file_request_escalates():
+    result = process_conversational_turn("read file notes.txt from my workspace")
+    assert result["escalate"] is True
+    assert result["intent_envelope"]["intent"] == "read_file"
+
+
 def test_escalation_routes_to_billy():
     conv = process_conversational_turn("write text hello to file hello.html in my workspace")
     assert conv["escalate"] is True

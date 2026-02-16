@@ -1,16 +1,16 @@
 Billy Maturity Snapshot (Authoritative)
 Release
 
-Tag: maturity-level-25
+Tag: maturity-level-27
 
-Status: Level 27 — Conversational Front-End & Interpreter Gate draft/in progress (not frozen)
+Status: Level 27 — Conversational Front-End & Interpreter Gate (frozen)
 
 Current Maturity
 
 Billy is operating at Level 27 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, governed delegation/sub-agent orchestration contracts, project-scoped repeatable workflow orchestration, and a conversational front-end secretary gate that separates chat from governed escalation.
 
 Current Working Edge:
-Level 27 is the active draft/in-progress edge. Levels 1-25 remain frozen.
+Level 27 is the current frozen baseline. Levels 1-27 remain frozen.
 
 Phase Summary (1–9)
 
@@ -282,7 +282,7 @@ Session diagnostics for last delegation result and strict CLARIFY fallback for u
 Status:
 Frozen delegation infrastructure. Delegated agents remain tool-scoped and non-authoritative, with no bypass of policy, approval, execution, filesystem scope, or legacy engineer boundaries.
 
-Maturity Level 26 — Execution Pipelines & Repeatable Workflows (Draft / In Progress)
+Maturity Level 26 — Execution Pipelines & Repeatable Workflows (Frozen)
 
 Capabilities:
 
@@ -297,9 +297,9 @@ Approval-gated workflow run start followed by explicit approval-driven step exec
 Workflow run status/cancellation semantics with auditable partial progress and preserved execution history
 
 Status:
-Draft/in-progress and not frozen. Workflow orchestration remains constrained to existing policy, approval, execution, and scope boundaries with no new authority paths.
+Frozen infrastructure. Workflow orchestration remains constrained to existing policy, approval, execution, and scope boundaries with no new authority paths.
 
-Maturity Level 27 — Conversational Front-End & Interpreter Gate (Draft / In Progress)
+Maturity Level 27 — Conversational Front-End & Interpreter Gate (Frozen)
 
 Capabilities:
 
@@ -311,10 +311,12 @@ Escalation trigger matching for execution-oriented natural language (`save`, `wr
 
 Ambiguous non-casual action requests escalated into governed `CLARIFY` handling instead of silent rejection
 
+Read/show/view/inspect phrasing remains non-authoritative chat by default unless a structured governed escalation form is used
+
 Runtime dispatch integration that forwards only escalated turns into Billy’s governed interpreter and returns chat responses directly for non-escalated turns
 
 Status:
-Draft/in-progress and not frozen. The conversational layer remains non-authoritative and cannot execute, mutate state, bypass policy, bypass approvals, or bypass contract-bound execution safeguards.
+Frozen infrastructure. The conversational layer remains non-authoritative and cannot execute, mutate state, bypass policy, bypass approvals, or bypass contract-bound execution safeguards.
 
 Freeze Policy
 

@@ -134,6 +134,37 @@ def test_read_only_informational_question_routes_to_llm(monkeypatch):
 @pytest.mark.parametrize(
     "user_input",
     [
+        "read ONBOARDING.md",
+        "show me /etc/passwd",
+    ],
+)
+def test_read_like_prompts_stay_non_authoritative_without_governed_or_inspection(monkeypatch, user_input: str):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    def _fail_governed(_intent_envelope):
+        raise AssertionError("Read-like non-authoritative prompts must not enter governed interpreter execution.")
+
+    def _fail_loop(_user_input: str, _trace_id: str):
+        raise AssertionError("Read-like non-authoritative prompts must not trigger deterministic loop.")
+
+    def _fail_inspect(_query: str):
+        raise AssertionError("Read-like non-authoritative prompts must not trigger inspection.")
+
+    monkeypatch.setattr(runtime_mod, "run_governed_interpreter", _fail_governed)
+    monkeypatch.setattr(runtime_mod, "_run_deterministic_loop", _fail_loop)
+    monkeypatch.setattr(runtime_mod, "_inspect_barn", _fail_inspect)
+
+    result = runtime.run_turn(user_input, {"trace_id": f"trace-read-non-authority-{abs(hash(user_input))}"})
+
+    assert result["status"] == "success"
+    assert result["mode"] == "conversation_layer"
+    assert result["tool_calls"] == []
+    assert "governance cannot be assumed implicitly" not in result["final_output"].lower()
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
         "what do bees eat?",
         "what services are running on this server?",
     ],
