@@ -8,6 +8,7 @@ correctly invoke the configured LLM.
 """
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -17,15 +18,19 @@ import subprocess
 import time
 import yaml
 import uuid
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List
+
+import copy
 
 try:
     from . import llm_api
 except ImportError:
     llm_api = None
 from .charter import load_charter
+from v2.core.advisory_planning import build_advisory_plan
 from v2.core.conversation_layer import process_conversational_turn, run_governed_interpreter
 from v2.core.contracts.loader import load_schema, ContractViolation
 from v2.core.tool_runner.docker_runner import DockerRunner
@@ -68,6 +73,23 @@ from v2.core.guardrails.invariants import (
 from v2.core.validation.plan_validator import PlanValidator as OutputPlanValidator
 from v2.core.guardrails.output_guard import OutputGuard
 from v2.core.resolution.outcomes import M27_CONTRACT_VERSION
+from v2.core.aci_intent_gatekeeper import (
+    INTENT_CLASS,
+    ACI_MAX_PHASE,
+    ACI_MIN_PHASE,
+    LadderState,
+    build_response_envelope,
+    derive_admissible_phase_transitions,
+    phase_gatekeeper,
+    route_intent,
+)
+from v2.core.aci_issuance_ledger import (
+    ACIIssuanceLedger,
+    REVOCATION_CONTRACT_NAME,
+    SUPERSESSION_CONTRACT_NAME,
+    build_receipt_envelope,
+    compute_transition_key,
+)
 try:
     from v2.billy_engineering import detect_engineering_intent, enforce_engineering
     from v2.billy_engineering.enforcement import EngineeringError
@@ -161,6 +183,9 @@ _ops_contract_dir.mkdir(parents=True, exist_ok=True)
 _ops_state_path = _ops_contract_dir / "state.json"
 _ops_journal_path = _ops_contract_dir / "journal.jsonl"
 _pending_ops_plans: Dict[str, Dict[str, str]] = {}
+_aci_issuance_dir = _V2_ROOT / "var" / "aci_issuance"
+_aci_issuance_dir.mkdir(parents=True, exist_ok=True)
+_aci_issuance_ledger_path = _aci_issuance_dir / "ledger.jsonl"
 _last_inspection: dict = {}
 _last_introspection_snapshot: Dict[str, Any] = {}
 _last_resolution: Dict[str, Any] = {}
@@ -843,6 +868,41 @@ def _extract_confirm_run_tool_request(text: str) -> str | None:
     if not match:
         return None
     return match.group(1)
+
+
+def _extract_confirm_issuance_request(text: str) -> str | None:
+    normalized = text.strip()
+    match = re.fullmatch(
+        r"confirm issuance(?:\s*:\s*([A-Za-z0-9._:-]+))?\s*",
+        normalized,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    target = match.group(1)
+    if target is None:
+        return ""
+    return target.strip()
+
+
+def _extract_revoke_artifact_request(text: str) -> str | None:
+    normalized = text.strip()
+    match = re.fullmatch(r"revoke\s+([A-Za-z0-9._:-]+)\s*", normalized, re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _extract_supersede_artifact_request(text: str) -> tuple[str, str] | None:
+    normalized = text.strip()
+    match = re.fullmatch(
+        r"supersede\s+([A-Za-z0-9._:-]+)\s+with\s+([A-Za-z0-9._:-]+)\s*",
+        normalized,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return match.group(1).strip(), match.group(2).strip()
 
 
 def _hash_text(value: str) -> str:
@@ -2438,6 +2498,119 @@ _GOVERNANCE_HANDOFF_RESPONSE = (
     "Governance cannot be assumed implicitly.\n"
     "Governance changes require an explicit command.\n"
     "Use: /governance load <path>"
+)
+
+_FOLLOW_UP_QUESTION_MAP = {
+    "how": "how",
+    "how?": "how",
+    "when": "when",
+    "when?": "when",
+    "where": "where",
+    "where?": "where",
+    "who": "who",
+    "who?": "who",
+}
+
+_TERMINAL_FILLER_PHRASES = (
+    "i can help with that",
+    "i can assist",
+    "let me know",
+)
+
+_WEBSITE_BUILD_VERBS = ("build", "create", "make")
+_WEBSITE_BUILD_TARGET_TOKENS = (
+    "website",
+    "web page",
+    "homepage",
+    "html page",
+    "html file",
+    ".html",
+)
+
+_ACTIVITY_MODE_ENTRIES = {
+    "study_mode": (
+        "let's study",
+        "lets study",
+        "let's study vocabulary",
+        "lets study vocabulary",
+        "study mode",
+        "start study mode",
+    ),
+    "coding_mode": (
+        "help me code",
+        "let's code",
+        "lets code",
+        "coding mode",
+        "start coding mode",
+    ),
+    "planning_mode": (
+        "planning time",
+        "let's plan",
+        "lets plan",
+        "planning mode",
+        "start planning mode",
+    ),
+}
+
+_ACTIVITY_MODE_EXIT_PHRASES = {
+    "exit mode",
+    "exit study mode",
+    "exit coding mode",
+    "exit planning mode",
+    "leave mode",
+    "stop mode",
+    "stop",
+}
+
+_STUDY_MODE_TOKENS = (
+    "study",
+    "vocabulary",
+    "word",
+    "definition",
+    "quiz",
+    "synonym",
+    "antonym",
+    "meaning",
+)
+
+_STUDY_MODE_QUIZ_BANK: List[Dict[str, Any]] = [
+    {
+        "question": "Which option is the closest synonym of `concise`?",
+        "options": {
+            "A": "brief",
+            "B": "hidden",
+            "C": "fragile",
+            "D": "distant",
+        },
+        "correct_option": "A",
+    },
+    {
+        "question": "Which option is the closest antonym of `scarce`?",
+        "options": {
+            "A": "limited",
+            "B": "plentiful",
+            "C": "silent",
+            "D": "narrow",
+        },
+        "correct_option": "B",
+    },
+    {
+        "question": "Which option means `to make less severe`?",
+        "options": {
+            "A": "aggravate",
+            "B": "mitigate",
+            "C": "duplicate",
+            "D": "postpone",
+        },
+        "correct_option": "B",
+    },
+]
+
+_ARTIFACT_DIFF_QUERY_PHRASES = (
+    "what changed",
+    "show the diff",
+    "show diff",
+    "compare versions",
 )
 
 
@@ -4061,7 +4234,12 @@ def _run_demo_tool(trace_id: str):
 
 
 class BillyRuntime:
-    def __init__(self, config: Dict[str, Any] | None = None, root_path: str | None = None) -> None:
+    def __init__(
+        self,
+        config: Dict[str, Any] | None = None,
+        root_path: str | None = None,
+        aci_ledger_path: str | None = None,
+    ) -> None:
         """
         Initialize the runtime.
 
@@ -4089,6 +4267,1643 @@ class BillyRuntime:
         }
         self._content_capture_store = InMemoryContentCaptureStore()
         self._last_content_generation_response: Dict[str, str] | None = None
+        ledger_path = aci_ledger_path or str(_aci_issuance_ledger_path)
+        self._aci_issuance_ledger = ACIIssuanceLedger(ledger_path=ledger_path)
+        self._aci_pending_proposal: Dict[str, Any] | None = None
+        self._aci_last_consumed_transition_key: str | None = None
+        self._conversation_context: Dict[str, str] = {
+            "last_user_intent": "",
+            "last_system_mode": "",
+            "last_subject_noun": "",
+            "last_user_input": "",
+        }
+        self._session_defaults: Dict[str, str] = {}
+        self._interactive_prompt_state: Dict[str, Any] | None = None
+        self._activity_mode_state: Dict[str, Any] | None = None
+        self._task_artifacts: Dict[str, Dict[str, Any]] = {}
+        self._task_artifact_history: Dict[str, List[Dict[str, Any]]] = {}
+        self._last_task_artifact_diff: Dict[str, Any] | None = None
+
+    def _extract_conversational_subject(self, utterance: str) -> str:
+        normalized = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not normalized:
+            return ""
+        html_file_match = re.search(r"\b([a-z0-9._-]+\.html)\b", normalized)
+        if html_file_match is not None:
+            return str(html_file_match.group(1))
+        if "website page" in normalized:
+            return "website page"
+        if "web page" in normalized:
+            return "web page"
+        if "website" in normalized:
+            return "website"
+        if "html" in normalized:
+            return "html file"
+        if "service" in normalized:
+            return "service"
+        if "file" in normalized:
+            return "file"
+        if "project" in normalized:
+            return "project"
+        return ""
+
+    def _remember_conversational_context(self, *, user_input: str, intent_class: str, mode: str) -> None:
+        normalized_input = str(user_input or "").strip()
+        if not normalized_input:
+            return
+        subject = self._extract_conversational_subject(normalized_input)
+        if not subject:
+            subject = str(self._conversation_context.get("last_subject_noun", "")).strip()
+        self._conversation_context = {
+            "last_user_intent": str(intent_class or "").strip(),
+            "last_system_mode": str(mode or "").strip(),
+            "last_subject_noun": subject,
+            "last_user_input": normalized_input,
+        }
+
+    def _follow_up_key(self, utterance: str) -> str | None:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return None
+        return _FOLLOW_UP_QUESTION_MAP.get(lowered)
+
+    def _artifact_public_view(self, artifact: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "name": str(artifact.get("name", "")).strip(),
+            "type": str(artifact.get("artifact_type", "")).strip(),
+            "revision": int(artifact.get("revision", 0)),
+            "revision_id": str(artifact.get("revision_id", "")).strip(),
+            "summary": str(artifact.get("summary", "")).strip(),
+            "session_scoped": True,
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
+
+    def _artifact_content_as_text(self, content: Any) -> str:
+        if isinstance(content, dict):
+            html_value = content.get("html")
+            if isinstance(html_value, str) and html_value.strip():
+                return html_value.strip()
+        return json.dumps(content, sort_keys=True, indent=2)
+
+    def _artifact_content_hash(self, content: Any) -> str:
+        canonical = json.dumps(content, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _artifact_revision_id(self, *, name: str, revision: int, content_hash: str) -> str:
+        return f"{name}:r{revision}:{content_hash[:12]}"
+
+    def _compute_artifact_diff(
+        self,
+        *,
+        artifact_name: str,
+        from_revision_id: str,
+        to_revision_id: str,
+        previous_content: Any,
+        current_content: Any,
+    ) -> Dict[str, Any] | None:
+        previous_text = self._artifact_content_as_text(previous_content)
+        current_text = self._artifact_content_as_text(current_content)
+        if previous_text == current_text:
+            return None
+
+        previous_lines = previous_text.splitlines()
+        current_lines = current_text.splitlines()
+        matcher = SequenceMatcher(a=previous_lines, b=current_lines, autojunk=False)
+        added_lines: List[str] = []
+        removed_lines: List[str] = []
+        changed_sections: List[Dict[str, str]] = []
+
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                continue
+            if tag in {"replace", "delete"}:
+                for old_line in previous_lines[i1:i2]:
+                    removed_lines.append(old_line)
+            if tag in {"replace", "insert"}:
+                for new_line in current_lines[j1:j2]:
+                    added_lines.append(new_line)
+            if tag == "replace":
+                old_block = "\n".join(previous_lines[i1:i2]).strip()
+                new_block = "\n".join(current_lines[j1:j2]).strip()
+                changed_sections.append(
+                    {
+                        "from": old_block,
+                        "to": new_block,
+                    }
+                )
+
+        max_lines = 6
+        added_preview = added_lines[:max_lines]
+        removed_preview = removed_lines[:max_lines]
+        changed_preview = changed_sections[:3]
+
+        lines: List[str] = [
+            f"Diff {from_revision_id} -> {to_revision_id} ({artifact_name})",
+        ]
+        if added_preview:
+            lines.append("Added lines:")
+            for line in added_preview:
+                lines.append(f"+ {line}")
+        if removed_preview:
+            lines.append("Removed lines:")
+            for line in removed_preview:
+                lines.append(f"- {line}")
+        if changed_preview:
+            lines.append("Changed sections:")
+            for section in changed_preview:
+                old_line = str(section.get("from", "")).splitlines()
+                new_line = str(section.get("to", "")).splitlines()
+                old_preview = old_line[0] if old_line else ""
+                new_preview = new_line[0] if new_line else ""
+                lines.append(f"~ {old_preview} -> {new_preview}")
+
+        return {
+            "artifact_name": artifact_name,
+            "from_revision_id": from_revision_id,
+            "to_revision_id": to_revision_id,
+            "added_lines": added_preview,
+            "removed_lines": removed_preview,
+            "changed_sections": changed_preview,
+            "diff_text": "\n".join(lines).strip(),
+        }
+
+    def _latest_artifact_diff(self, artifact_name: str) -> Dict[str, Any] | None:
+        history = self._task_artifact_history.get(str(artifact_name or "").strip(), [])
+        if not isinstance(history, list) or len(history) < 2:
+            return None
+        previous = history[-2]
+        current = history[-1]
+        if not isinstance(previous, dict) or not isinstance(current, dict):
+            return None
+        return self._compute_artifact_diff(
+            artifact_name=str(current.get("name", "")).strip() or str(artifact_name or "").strip(),
+            from_revision_id=str(previous.get("revision_id", "")).strip(),
+            to_revision_id=str(current.get("revision_id", "")).strip(),
+            previous_content=previous.get("content"),
+            current_content=current.get("content"),
+        )
+
+    def _upsert_task_artifact(
+        self,
+        *,
+        name: str,
+        artifact_type: str,
+        content: Any,
+        summary: str,
+        source_mode: str,
+    ) -> Dict[str, Any]:
+        normalized_name = str(name or "").strip()
+        if not normalized_name:
+            raise ValueError("artifact name is required")
+        existing = self._task_artifacts.get(normalized_name, {})
+        normalized_type = str(artifact_type or "").strip() or normalized_name
+        normalized_summary = str(summary or "").strip()
+        normalized_source_mode = str(source_mode or "").strip() or "conversation"
+        normalized_content = copy.deepcopy(content)
+        if (
+            isinstance(existing, dict)
+            and str(existing.get("artifact_type", "")).strip() == normalized_type
+            and existing.get("content") == normalized_content
+            and str(existing.get("summary", "")).strip() == normalized_summary
+            and str(existing.get("source_mode", "")).strip() == normalized_source_mode
+        ):
+            return copy.deepcopy(existing)
+
+        existing_revision = existing.get("revision", 0)
+        revision = existing_revision if isinstance(existing_revision, int) and existing_revision >= 0 else 0
+        content_hash = self._artifact_content_hash(normalized_content)
+        revision_id = self._artifact_revision_id(
+            name=normalized_name,
+            revision=revision + 1,
+            content_hash=content_hash,
+        )
+        previous_revision_id = str(existing.get("revision_id", "")).strip() if isinstance(existing, dict) else ""
+        artifact = {
+            "name": normalized_name,
+            "artifact_type": normalized_type,
+            "content": normalized_content,
+            "summary": normalized_summary,
+            "source_mode": normalized_source_mode,
+            "revision": revision + 1,
+            "revision_id": revision_id,
+            "content_hash": content_hash,
+            "previous_revision_id": previous_revision_id,
+        }
+        self._task_artifacts[normalized_name] = artifact
+        history = self._task_artifact_history.setdefault(normalized_name, [])
+        history.append(copy.deepcopy(artifact))
+        if isinstance(existing, dict) and existing:
+            self._last_task_artifact_diff = self._compute_artifact_diff(
+                artifact_name=normalized_name,
+                from_revision_id=previous_revision_id,
+                to_revision_id=revision_id,
+                previous_content=existing.get("content"),
+                current_content=normalized_content,
+            )
+        else:
+            self._last_task_artifact_diff = None
+        return copy.deepcopy(artifact)
+
+    def _get_task_artifact(self, name: str) -> Dict[str, Any] | None:
+        normalized_name = str(name or "").strip()
+        if not normalized_name:
+            return None
+        artifact = self._task_artifacts.get(normalized_name)
+        if not isinstance(artifact, dict):
+            return None
+        return copy.deepcopy(artifact)
+
+    def _discard_task_artifact(self, name: str) -> bool:
+        normalized_name = str(name or "").strip()
+        if not normalized_name:
+            return False
+        if normalized_name not in self._task_artifacts:
+            return False
+        del self._task_artifacts[normalized_name]
+        return True
+
+    def _extract_artifact_reset_target(self, utterance: str) -> str | None:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return None
+        if lowered in {"start over", "reset artifacts", "clear artifacts", "discard artifacts"}:
+            return "__all__"
+        reset_verbs = ("discard", "reset", "clear", "remove", "delete", "drop")
+        if not any(verb in lowered for verb in reset_verbs):
+            return None
+        if "html_page" in lowered or "html page" in lowered or "the html" in lowered or "html" in lowered:
+            return "html_page"
+        if (
+            "study_session" in lowered
+            or "study session" in lowered
+            or "study set" in lowered
+            or "vocabulary set" in lowered
+        ):
+            return "study_session"
+        return None
+
+    def _resolve_task_artifact_reference(self, utterance: str) -> str | None:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return None
+        if "html_page" in lowered and "html_page" in self._task_artifacts:
+            return "html_page"
+        if (
+            "html_page" in self._task_artifacts
+            and (
+                "the html" in lowered
+                or "html we made" in lowered
+                or "html page" in lowered
+                or "web page" in lowered
+                or "website page" in lowered
+                or "add a paragraph" in lowered
+                or "add paragraph" in lowered
+            )
+        ):
+            return "html_page"
+        if "study_session" in lowered and "study_session" in self._task_artifacts:
+            return "study_session"
+        if (
+            "study_session" in self._task_artifacts
+            and (
+                "study set" in lowered
+                or "study session" in lowered
+                or "continue studying" in lowered
+                or "continue the study" in lowered
+                or "resume study" in lowered
+                or "resume the study" in lowered
+            )
+        ):
+            return "study_session"
+        return None
+
+    def _is_artifact_diff_query(self, utterance: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return False
+        if lowered in _ARTIFACT_DIFF_QUERY_PHRASES:
+            return True
+        return any(phrase in lowered for phrase in _ARTIFACT_DIFF_QUERY_PHRASES)
+
+    def _extract_html_paragraph_text(self, utterance: str) -> str | None:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if "add a paragraph" not in lowered and "add paragraph" not in lowered:
+            return None
+
+        quoted = re.search(r"['\"]([^'\"]+)['\"]", str(utterance or "").strip())
+        if quoted is not None:
+            candidate = str(quoted.group(1)).strip()
+            if candidate:
+                return candidate
+
+        tail_match = re.search(
+            r"add (?:a )?paragraph(?: that says| saying| with text)?\s*(.*)$",
+            str(utterance or "").strip(),
+            re.IGNORECASE,
+        )
+        if tail_match is not None:
+            tail = str(tail_match.group(1)).strip().strip(".")
+            if tail:
+                lowered_tail = tail.lower()
+                if lowered_tail not in {"to html", "to the html", "to the page", "to page"}:
+                    return tail
+
+        return "New paragraph from advisory artifact update."
+
+    def _append_paragraph_to_html(self, html_content: str, paragraph_text: str) -> str:
+        base_html = str(html_content or "").strip()
+        if not base_html:
+            base_html = self._website_example_html(title="index.html", include_style=False)
+        paragraph = f"    <p>{html.escape(str(paragraph_text or '').strip())}</p>\n"
+        if "</main>" in base_html:
+            return base_html.replace("</main>", f"{paragraph}  </main>", 1)
+        if "</body>" in base_html:
+            return base_html.replace("</body>", f"{paragraph}</body>", 1)
+        return f"{base_html}\n{paragraph}".rstrip()
+
+    def _sync_study_session_artifact(
+        self,
+        *,
+        answered_correctly: bool | None = None,
+        selected_option: str | None = None,
+        correct_option: str | None = None,
+    ) -> Dict[str, Any]:
+        existing = self._get_task_artifact("study_session")
+        content = existing.get("content", {}) if isinstance(existing, dict) else {}
+        content = content if isinstance(content, dict) else {}
+
+        questions_answered = content.get("questions_answered", 0)
+        questions_correct = content.get("questions_correct", 0)
+        quiz_index = content.get("quiz_index", 0)
+        questions_answered = questions_answered if isinstance(questions_answered, int) and questions_answered >= 0 else 0
+        questions_correct = questions_correct if isinstance(questions_correct, int) and questions_correct >= 0 else 0
+        quiz_index = quiz_index if isinstance(quiz_index, int) and quiz_index >= 0 else 0
+
+        if answered_correctly is not None:
+            questions_answered += 1
+            if answered_correctly:
+                questions_correct += 1
+        mode_state = self._activity_mode_state if isinstance(self._activity_mode_state, dict) else {}
+        mode_index = mode_state.get("quiz_index", quiz_index)
+        if isinstance(mode_index, int) and mode_index >= 0:
+            quiz_index = mode_index
+
+        updated_content = {
+            "topic": "vocabulary",
+            "questions_answered": questions_answered,
+            "questions_correct": questions_correct,
+            "quiz_index": quiz_index,
+            "last_selected_option": str(selected_option or "").strip().upper(),
+            "last_correct_option": str(correct_option or "").strip().upper(),
+        }
+        summary = (
+            "Vocabulary study progress: "
+            f"{questions_correct}/{questions_answered} correct. "
+            "Session-scoped and non-executing."
+        )
+        return self._upsert_task_artifact(
+            name="study_session",
+            artifact_type="study_session",
+            content=updated_content,
+            summary=summary,
+            source_mode="activity_mode",
+        )
+
+    def _build_html_artifact_advisory_response(
+        self,
+        *,
+        artifact: Dict[str, Any],
+        trace_id: str,
+        message: str,
+        artifact_diff: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        content = artifact.get("content", {})
+        content = content if isinstance(content, dict) else {}
+        filename = str(content.get("filename", "")).strip() or str(self._session_defaults.get("website_filename", "")).strip()
+        filename = filename or "index.html"
+        html_content = str(content.get("html", "")).strip() or self._website_example_html(title=filename, include_style=False)
+
+        advisory_output = build_advisory_plan(
+            utterance=f"plan website page {filename}",
+            intent_class="planning_request",
+        )
+        advisory_output["message"] = f"{message} Commands remain suggestions only and were NOT EXECUTED."
+        advisory_output["example_html"] = html_content
+        advisory_output["suggested_commands"] = [
+            f"NOT EXECUTED: cat > {filename} <<'HTML'",
+            "NOT EXECUTED: (paste the example_html content)",
+            "NOT EXECUTED: HTML",
+            "NOT EXECUTED: python -m http.server 8000",
+        ]
+        assumptions = advisory_output.get("assumptions", [])
+        assumptions = assumptions if isinstance(assumptions, list) else []
+        advisory_output["assumptions"] = [
+            "Task artifact `html_page` is session-scoped and non-executing.",
+            "Default: local-only workflow (no deployment).",
+        ] + assumptions
+        advisory_output["task_artifact"] = self._artifact_public_view(artifact)
+        if isinstance(artifact_diff, dict) and artifact_diff:
+            advisory_output["artifact_diff"] = copy.deepcopy(artifact_diff)
+        advisory_output = self._prepare_advisory_output(advisory_output)
+        self._activate_interactive_prompt_from_advisory(
+            advisory_output=advisory_output,
+            trace_id=trace_id,
+        )
+        self._remember_conversational_context(
+            user_input=f"html artifact {filename}",
+            intent_class="planning_request",
+            mode="advisory",
+        )
+        return {
+            "final_output": advisory_output,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "advisory",
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
+
+    def _handle_task_artifact_turn(self, *, user_input: str, trace_id: str) -> Dict[str, Any] | None:
+        normalized = str(user_input or "").strip()
+        if not normalized:
+            return None
+        if self._is_artifact_diff_query(normalized):
+            target_artifact = self._resolve_task_artifact_reference(normalized)
+            diff_payload: Dict[str, Any] | None = None
+            if target_artifact is not None:
+                diff_payload = self._latest_artifact_diff(target_artifact)
+            if diff_payload is None and isinstance(self._last_task_artifact_diff, dict):
+                diff_payload = copy.deepcopy(self._last_task_artifact_diff)
+            if diff_payload is None:
+                return {
+                    "final_output": "No artifact diff is available yet in this session.",
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                    "mode": "conversation_layer",
+                }
+            return {
+                "final_output": str(diff_payload.get("diff_text", "")).strip(),
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "conversation_layer",
+                "artifact_diff": diff_payload,
+            }
+        reset_target = self._extract_artifact_reset_target(normalized)
+        if reset_target == "__all__":
+            if not self._task_artifacts:
+                return {
+                    "final_output": "No task artifacts are active in this session.",
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                    "mode": "conversation_layer",
+                }
+            self._task_artifacts.clear()
+            self._task_artifact_history.clear()
+            self._last_task_artifact_diff = None
+            self._clear_activity_mode()
+            self._interactive_prompt_state = None
+            return {
+                "final_output": "All session task artifacts were discarded. You can start over safely.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "conversation_layer",
+            }
+        if reset_target in {"html_page", "study_session"}:
+            removed = self._discard_task_artifact(reset_target)
+            self._task_artifact_history.pop(reset_target, None)
+            if (
+                isinstance(self._last_task_artifact_diff, dict)
+                and str(self._last_task_artifact_diff.get("artifact_name", "")).strip() == reset_target
+            ):
+                self._last_task_artifact_diff = None
+            if reset_target == "study_session":
+                mode_state = self._activity_mode_state if isinstance(self._activity_mode_state, dict) else {}
+                if str(mode_state.get("mode", "")).strip() == "study_mode":
+                    self._clear_activity_mode()
+            if not removed:
+                return {
+                    "final_output": f"Task artifact `{reset_target}` was not active, so nothing was discarded.",
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                    "mode": "conversation_layer",
+                }
+            return {
+                "final_output": f"Discarded task artifact `{reset_target}` for this session.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "conversation_layer",
+            }
+
+        artifact_name = self._resolve_task_artifact_reference(normalized)
+        if artifact_name is None:
+            return None
+        artifact = self._get_task_artifact(artifact_name)
+        if artifact is None:
+            return None
+
+        lowered = re.sub(r"\s+", " ", normalized.lower())
+        if artifact_name == "study_session":
+            if any(token in lowered for token in ("continue", "resume", "next", "another", "again")):
+                content = artifact.get("content", {})
+                content = content if isinstance(content, dict) else {}
+                quiz_index = content.get("quiz_index", 0)
+                quiz_index = quiz_index if isinstance(quiz_index, int) and quiz_index >= 0 else 0
+                if not isinstance(self._activity_mode_state, dict) or str(
+                    self._activity_mode_state.get("mode", "")
+                ).strip() != "study_mode":
+                    self._activity_mode_state = {
+                        "mode": "study_mode",
+                        "entered_at": "session_resume",
+                        "questions_asked": int(content.get("questions_answered", 0) or 0),
+                        "quiz_index": quiz_index,
+                    }
+                return self._build_study_mode_quiz_prompt(
+                    trace_id=trace_id,
+                    preface="Resuming task artifact `study_session`.",
+                )
+            return {
+                "final_output": (
+                    "Resolved task artifact `study_session`. "
+                    "Say `continue the study set` to resume the next question, or `discard the study set`."
+                ),
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "conversation_layer",
+            }
+
+        if artifact_name == "html_page":
+            content = artifact.get("content", {})
+            content = content if isinstance(content, dict) else {}
+            current_html = str(content.get("html", "")).strip()
+            wants_edit = any(token in lowered for token in ("edit", "update", "change", "modify", "add"))
+            paragraph_text = self._extract_html_paragraph_text(normalized)
+            if paragraph_text is not None:
+                updated_html = self._append_paragraph_to_html(current_html, paragraph_text)
+                updated_content = dict(content)
+                updated_content["html"] = updated_html
+                filename = str(updated_content.get("filename", "")).strip() or "index.html"
+                updated_artifact = self._upsert_task_artifact(
+                    name="html_page",
+                    artifact_type="html_page",
+                    content=updated_content,
+                    summary=f"HTML task artifact for {filename} updated with a new paragraph.",
+                    source_mode="advisory",
+                )
+                artifact_diff = self._latest_artifact_diff("html_page")
+                return self._build_html_artifact_advisory_response(
+                    artifact=updated_artifact,
+                    trace_id=trace_id,
+                    message="Updated task artifact `html_page` with your paragraph request.",
+                    artifact_diff=artifact_diff,
+                )
+            if wants_edit:
+                return self._build_html_artifact_advisory_response(
+                    artifact=artifact,
+                    trace_id=trace_id,
+                    message=(
+                        "Resolved task artifact `html_page`. "
+                        "Tell me the exact HTML change and I will update this advisory artifact."
+                    ),
+                )
+            return self._build_html_artifact_advisory_response(
+                artifact=artifact,
+                trace_id=trace_id,
+                message="Resolved task artifact `html_page` from this session.",
+            )
+
+        return None
+
+    def _activity_mode_label(self, mode: str) -> str:
+        return str(mode or "").strip().replace("_", " ")
+
+    def _detect_activity_mode_entry(self, utterance: str) -> str | None:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return None
+        for mode_name, triggers in _ACTIVITY_MODE_ENTRIES.items():
+            if lowered in triggers:
+                return mode_name
+        return None
+
+    def _is_activity_mode_exit_request(self, utterance: str, mode: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return False
+        if lowered in _ACTIVITY_MODE_EXIT_PHRASES:
+            return True
+        mode_label = self._activity_mode_label(mode)
+        return lowered in {f"exit {mode_label}", f"stop {mode_label}", f"leave {mode_label}"}
+
+    def _clear_activity_mode(self) -> None:
+        self._activity_mode_state = None
+        prompt_state = self._interactive_prompt_state
+        if isinstance(prompt_state, dict) and str(prompt_state.get("origin", "")).strip() == "study_mode":
+            self._interactive_prompt_state = None
+
+    def _study_mode_next_quiz(self) -> tuple[Dict[str, Any], int]:
+        if not _STUDY_MODE_QUIZ_BANK:
+            return (
+                {
+                    "question": "Which option best matches `concise`?",
+                    "options": {"A": "brief", "B": "hidden", "C": "fragile", "D": "distant"},
+                    "correct_option": "A",
+                },
+                0,
+            )
+        state = self._activity_mode_state if isinstance(self._activity_mode_state, dict) else {}
+        raw_index = state.get("quiz_index", 0)
+        quiz_index = raw_index if isinstance(raw_index, int) and raw_index >= 0 else 0
+        bank_index = quiz_index % len(_STUDY_MODE_QUIZ_BANK)
+        quiz = dict(_STUDY_MODE_QUIZ_BANK[bank_index])
+        if isinstance(self._activity_mode_state, dict):
+            self._activity_mode_state["quiz_index"] = quiz_index + 1
+            asked_count = self._activity_mode_state.get("questions_asked", 0)
+            self._activity_mode_state["questions_asked"] = (asked_count if isinstance(asked_count, int) else 0) + 1
+        return quiz, bank_index + 1
+
+    def _build_study_mode_quiz_prompt(self, *, trace_id: str, preface: str = "") -> Dict[str, Any]:
+        quiz, question_number = self._study_mode_next_quiz()
+        question = str(quiz.get("question", "")).strip() or "Choose the best option."
+        options = quiz.get("options", {})
+        options = options if isinstance(options, dict) else {}
+        ordered_options = [str(key).upper() for key in sorted(options.keys())]
+        if not ordered_options:
+            ordered_options = ["A", "B", "C", "D"]
+            options = {"A": "brief", "B": "hidden", "C": "fragile", "D": "distant"}
+        default_option = ordered_options[0]
+        correct_option = str(quiz.get("correct_option", default_option)).upper()
+        if correct_option not in ordered_options:
+            correct_option = default_option
+
+        prompt_lines = [
+            "Study Mode: Vocabulary",
+            f"Question {question_number}",
+            question,
+        ]
+        for option_key in ordered_options:
+            option_text = str(options.get(option_key, "")).strip()
+            prompt_lines.append(f"{option_key}) {option_text}")
+        prompt_lines.append("Please choose one: A, B, C, or D.")
+        prompt_text = "\n".join(prompt_lines)
+        if preface:
+            prompt_text = f"{preface}\n\n{prompt_text}"
+
+        self._interactive_prompt_state = {
+            "type": "multiple_choice",
+            "origin": "study_mode",
+            "prompt_id": f"interactive-{trace_id}",
+            "question": question,
+            "options": options,
+            "correct_option": correct_option,
+            "default_option": default_option,
+        }
+        return {
+            "final_output": prompt_text,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "activity_mode",
+            "activity_mode": "study_mode",
+            "activity_mode_active": True,
+            "interactive_prompt_active": True,
+            "interactive_prompt_type": "multiple_choice",
+        }
+
+    def _enter_activity_mode(
+        self,
+        *,
+        mode: str,
+        trace_id: str,
+        switched_from: str | None = None,
+    ) -> Dict[str, Any]:
+        normalized_mode = str(mode or "").strip()
+        if normalized_mode not in {"study_mode", "coding_mode", "planning_mode"}:
+            return {
+                "final_output": "Activity mode request rejected: mode is unsupported.",
+                "tool_calls": [],
+                "status": "error",
+                "trace_id": trace_id,
+                "mode": "activity_mode",
+            }
+
+        self._clear_activity_mode()
+        self._activity_mode_state = {
+            "mode": normalized_mode,
+            "entered_at": datetime.now(timezone.utc).isoformat(),
+            "questions_asked": 0,
+            "quiz_index": 0,
+        }
+        prefix = f"Entered {normalized_mode}. "
+        if switched_from:
+            prefix = f"Switched from {switched_from} to {normalized_mode}. "
+        prefix += f"Say `exit {self._activity_mode_label(normalized_mode)}` to stop this mode."
+
+        if normalized_mode == "study_mode":
+            study_artifact = self._sync_study_session_artifact()
+            artifact_note = (
+                f" Task artifact `{study_artifact.get('name', 'study_session')}` is active "
+                "(session-scoped, non-executing)."
+            )
+            return self._build_study_mode_quiz_prompt(trace_id=trace_id, preface=prefix + artifact_note)
+
+        mode_summary = {
+            "coding_mode": "Coding mode is active. I will keep replies focused on implementation planning and code guidance.",
+            "planning_mode": "Planning mode is active. I will keep replies focused on sequencing, risks, and rollout plans.",
+        }
+        return {
+            "final_output": f"{prefix}\n{mode_summary.get(normalized_mode, '')}".strip(),
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "activity_mode",
+            "activity_mode": normalized_mode,
+            "activity_mode_active": True,
+            "interactive_prompt_active": False,
+        }
+
+    def _is_study_mode_related(self, utterance: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return False
+        if self._is_vocabulary_quiz_request(lowered):
+            return True
+        if lowered in {"a", "b", "c", "d", "yes", "no", "next", "again", "another", "continue", "that one", "this one"}:
+            return True
+        return any(token in lowered for token in _STUDY_MODE_TOKENS)
+
+    def _should_implicitly_exit_activity_mode(self, *, mode: str, utterance: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return False
+
+        next_mode = self._detect_activity_mode_entry(lowered)
+        if next_mode is not None and next_mode != mode:
+            return True
+
+        if _has_explicit_governed_trigger(utterance):
+            return True
+        if re.search(r"\b(run|execute|deploy|apply)\b", lowered) and (
+            "now" in lowered or "immediately" in lowered
+        ):
+            return True
+        if re.search(
+            r"\b(create|delete|remove|write|edit|modify)\b.*\b("
+            r"file|folder|directory|repo|repository|project|workflow|service"
+            r")\b",
+            lowered,
+        ):
+            return True
+
+        if mode == "study_mode":
+            if self._is_study_mode_related(lowered):
+                return False
+            if self._is_website_build_request(utterance):
+                return True
+            return bool(re.search(r"\b(coding|code|plan|planning|project|workflow|service)\b", lowered))
+
+        if mode == "coding_mode":
+            return bool(re.search(r"\b(study|vocabulary|quiz)\b", lowered))
+
+        if mode == "planning_mode":
+            return bool(re.search(r"\b(study|vocabulary|quiz)\b", lowered))
+
+        return True
+
+    def _handle_activity_mode_turn(self, *, user_input: str, trace_id: str) -> Dict[str, Any] | None:
+        normalized = str(user_input or "").strip()
+        if not normalized:
+            return None
+        if self._extract_artifact_reset_target(normalized) is not None:
+            return None
+        requested_mode = self._detect_activity_mode_entry(normalized)
+
+        state = self._activity_mode_state
+        if not isinstance(state, dict):
+            if requested_mode is None:
+                return None
+            return self._enter_activity_mode(mode=requested_mode, trace_id=trace_id)
+
+        current_mode = str(state.get("mode", "")).strip()
+        if requested_mode is not None and requested_mode != current_mode:
+            return self._enter_activity_mode(
+                mode=requested_mode,
+                trace_id=trace_id,
+                switched_from=current_mode,
+            )
+        if requested_mode is not None and requested_mode == current_mode:
+            return {
+                "final_output": (
+                    f"{current_mode} is already active. "
+                    f"Say `exit {self._activity_mode_label(current_mode)}` when you want to stop."
+                ),
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "activity_mode",
+                "activity_mode": current_mode,
+                "activity_mode_active": True,
+            }
+
+        if self._is_activity_mode_exit_request(normalized, current_mode):
+            self._clear_activity_mode()
+            return {
+                "final_output": f"Exited {current_mode}. Normal routing resumed.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "activity_mode",
+                "activity_mode": current_mode,
+                "activity_mode_active": False,
+                "interactive_prompt_active": False,
+            }
+
+        if self._should_implicitly_exit_activity_mode(mode=current_mode, utterance=normalized):
+            self._clear_activity_mode()
+            return None
+
+        lowered = re.sub(r"\s+", " ", normalized.lower())
+        if current_mode == "study_mode":
+            if lowered in {"next", "next question", "again", "another", "continue", "question", "quiz"}:
+                return self._build_study_mode_quiz_prompt(
+                    trace_id=trace_id,
+                    preface="Study mode is active. Here is the next vocabulary question.",
+                )
+            if lowered in {"a", "b", "c", "d", "that one", "this one"} and not isinstance(
+                self._interactive_prompt_state, dict
+            ):
+                return self._build_study_mode_quiz_prompt(
+                    trace_id=trace_id,
+                    preface="Study mode is active. Starting a new question before grading your choice.",
+                )
+            if not isinstance(self._interactive_prompt_state, dict):
+                return self._build_study_mode_quiz_prompt(
+                    trace_id=trace_id,
+                    preface="Study mode is active. Continuing with vocabulary practice.",
+                )
+            return {
+                "final_output": (
+                    "Study mode is active. Reply with A, B, C, or D for the active question, "
+                    "or say `next question` or `exit study mode`."
+                ),
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "activity_mode",
+                "activity_mode": "study_mode",
+                "activity_mode_active": True,
+                "interactive_prompt_active": True,
+            }
+
+        if current_mode == "coding_mode" and len(lowered.split()) <= 3:
+            return {
+                "final_output": (
+                    "Coding mode is active. Share what you want to build or change, "
+                    "or say `exit coding mode`."
+                ),
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "activity_mode",
+                "activity_mode": "coding_mode",
+                "activity_mode_active": True,
+            }
+
+        if current_mode == "planning_mode" and len(lowered.split()) <= 3:
+            return {
+                "final_output": (
+                    "Planning mode is active. Share the goal and constraints, "
+                    "or say `exit planning mode`."
+                ),
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "activity_mode",
+                "activity_mode": "planning_mode",
+                "activity_mode_active": True,
+            }
+
+        return None
+
+    def _is_vocabulary_quiz_request(self, utterance: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return False
+        direct_matches = {
+            "quiz me",
+            "give me a quiz",
+            "vocabulary quiz",
+            "quiz me on vocabulary",
+        }
+        if lowered in direct_matches:
+            return True
+        return lowered.startswith("quiz me on vocabulary ")
+
+    def _normalize_interactive_reply(self, utterance: str) -> str:
+        return re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+
+    def _resolve_yes_no_reply(self, reply: str) -> str | None:
+        yes_tokens = {"y", "yes", "yeah", "yep", "affirmative", "sure", "ok", "okay"}
+        no_tokens = {"n", "no", "nope", "nah", "negative"}
+        if reply in yes_tokens:
+            return "yes"
+        if reply in no_tokens:
+            return "no"
+        return None
+
+    def _resolve_multiple_choice_reply(
+        self,
+        *,
+        reply: str,
+        default_option: str,
+        allowed_options: List[str],
+    ) -> str | None:
+        if not reply:
+            return None
+        normalized_allowed = [str(item).upper() for item in allowed_options]
+        if re.fullmatch(r"[a-z]", reply):
+            candidate = reply.upper()
+            if candidate in normalized_allowed:
+                return candidate
+
+        alias_map = {
+            "option a": "A",
+            "option b": "B",
+            "option c": "C",
+            "option d": "D",
+            "the first option": "A",
+            "first option": "A",
+            "the second option": "B",
+            "second option": "B",
+            "the third option": "C",
+            "third option": "C",
+            "the fourth option": "D",
+            "fourth option": "D",
+            "the first": "A",
+            "first": "A",
+            "the second": "B",
+            "second": "B",
+            "the third": "C",
+            "third": "C",
+            "the fourth": "D",
+            "fourth": "D",
+            "that one": str(default_option or "A").upper(),
+            "this one": str(default_option or "A").upper(),
+        }
+        candidate = alias_map.get(reply)
+        if candidate is None:
+            return None
+        if candidate not in normalized_allowed:
+            return None
+        return candidate
+
+    def _build_vocabulary_quiz_prompt(self, *, trace_id: str) -> Dict[str, Any]:
+        options = {
+            "A": "brief",
+            "B": "hidden",
+            "C": "fragile",
+            "D": "distant",
+        }
+        prompt_text = "\n".join(
+            [
+                "Vocabulary Quiz",
+                "Which option is the closest synonym of `concise`?",
+                "A) brief",
+                "B) hidden",
+                "C) fragile",
+                "D) distant",
+                "Please choose A, B, C, or D.",
+            ]
+        )
+        self._interactive_prompt_state = {
+            "type": "multiple_choice",
+            "origin": "direct_quiz",
+            "prompt_id": f"interactive-{trace_id}",
+            "question": "Which option is the closest synonym of concise?",
+            "options": options,
+            "correct_option": "A",
+            "default_option": "A",
+        }
+        return {
+            "final_output": prompt_text,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "interactive_prompt",
+            "interactive_prompt_active": True,
+            "interactive_prompt_type": "multiple_choice",
+        }
+
+    def _activate_interactive_prompt_from_advisory(self, *, advisory_output: Dict[str, Any], trace_id: str) -> None:
+        question = str(advisory_output.get("continuation_question", "")).strip()
+        if not question.endswith("?"):
+            return
+        lowered = question.lower()
+        if not (
+            lowered.startswith("do you ")
+            or lowered.startswith("would you ")
+            or lowered.startswith("shall ")
+            or lowered.startswith("should ")
+        ):
+            return
+
+        on_yes = "Okay. Tell me what to refine, and I will regenerate the advisory output."
+        on_no = "Understood. We can keep the current advisory output."
+        if "adjust this html" in lowered:
+            on_yes = "Okay. Tell me exactly what to change in the HTML, and I will regenerate the advisory output."
+            on_no = "Understood. We can keep this HTML advisory as-is."
+        elif "submit this as a governed proposal" in lowered:
+            on_yes = "Understood. If you want to proceed, use an explicit governed submission confirmation."
+            on_no = "Understood. We can keep planning without submitting."
+
+        self._interactive_prompt_state = {
+            "type": "yes_no",
+            "prompt_id": f"interactive-{trace_id}",
+            "question": question,
+            "origin": "advisory",
+            "on_yes": on_yes,
+            "on_no": on_no,
+        }
+
+    def _handle_bound_interactive_turn(self, *, user_input: str, trace_id: str) -> Dict[str, Any] | None:
+        state = self._interactive_prompt_state
+        if not isinstance(state, dict):
+            return None
+
+        reply = self._normalize_interactive_reply(user_input)
+        prompt_type = str(state.get("type", "")).strip()
+        if not reply:
+            return {
+                "final_output": "I’m waiting for your response to the active prompt.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "interactive_prompt",
+                "interactive_prompt_active": True,
+            }
+        if reply in {"cancel", "cancel prompt", "skip", "never mind", "nevermind"}:
+            self._interactive_prompt_state = None
+            return {
+                "final_output": "Interactive prompt cleared. You can send a new request.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "interactive_response",
+                "interactive_prompt_active": False,
+            }
+
+        if prompt_type == "multiple_choice":
+            choice_like = bool(re.fullmatch(r"[a-z]", reply))
+            choice_like = choice_like or bool(
+                re.fullmatch(
+                    r"(?:option [a-d]|the first option|first option|the second option|second option|"
+                    r"the third option|third option|the fourth option|fourth option|the first|first|"
+                    r"the second|second|the third|third|the fourth|fourth|that one|this one)",
+                    reply,
+                )
+            )
+            if not choice_like:
+                return None
+
+            options = state.get("options", {})
+            allowed_options = sorted(str(key).upper() for key in options.keys())
+            selected = self._resolve_multiple_choice_reply(
+                reply=reply,
+                default_option=str(state.get("default_option", "A")),
+                allowed_options=allowed_options,
+            )
+            if selected is None:
+                return {
+                    "final_output": "Please answer with one choice: A, B, C, or D.",
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                    "mode": "interactive_prompt",
+                    "interactive_prompt_active": True,
+                    "interactive_prompt_type": "multiple_choice",
+                }
+            correct = str(state.get("correct_option", "")).upper()
+            selected_text = str(options.get(selected, "")).strip()
+            if selected == correct:
+                message = f"Correct: option {selected} (`{selected_text}`) is the closest synonym."
+            else:
+                correct_text = str(options.get(correct, "")).strip()
+                message = (
+                    f"Not quite: you chose {selected} (`{selected_text}`). "
+                    f"The correct answer is {correct} (`{correct_text}`)."
+                )
+            prompt_origin = str(state.get("origin", "")).strip()
+            mode_state = self._activity_mode_state if isinstance(self._activity_mode_state, dict) else {}
+            current_mode = str(mode_state.get("mode", "")).strip()
+            if prompt_origin == "study_mode" and current_mode == "study_mode":
+                self._sync_study_session_artifact(
+                    answered_correctly=selected == correct,
+                    selected_option=selected,
+                    correct_option=correct,
+                )
+                next_prompt = self._build_study_mode_quiz_prompt(
+                    trace_id=trace_id,
+                    preface="Study mode remains active. Here is the next question.",
+                )
+                return {
+                    "final_output": f"{message}\n\n{next_prompt.get('final_output', '')}".strip(),
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                    "mode": "activity_mode",
+                    "activity_mode": "study_mode",
+                    "activity_mode_active": True,
+                    "interactive_prompt_active": True,
+                    "interactive_prompt_type": "multiple_choice",
+                }
+            self._interactive_prompt_state = None
+            return {
+                "final_output": message,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "interactive_response",
+                "interactive_prompt_active": False,
+            }
+
+        if prompt_type == "yes_no":
+            follow_up = self._follow_up_key(reply)
+            yes_no_like = self._resolve_yes_no_reply(reply) is not None
+            if follow_up is None and not yes_no_like:
+                return None
+
+            if follow_up is not None and str(state.get("origin", "")) == "advisory":
+                self._interactive_prompt_state = None
+                follow_up_response = self._build_follow_up_advisory_response(
+                    follow_up=follow_up,
+                    trace_id=trace_id,
+                )
+                if follow_up_response is not None:
+                    return follow_up_response
+
+            decision = self._resolve_yes_no_reply(reply)
+            if decision is None:
+                return {
+                    "final_output": "Please respond with yes or no for the active prompt.",
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                    "mode": "interactive_prompt",
+                    "interactive_prompt_active": True,
+                    "interactive_prompt_type": "yes_no",
+                }
+            self._interactive_prompt_state = None
+            message = str(state.get("on_yes", "")) if decision == "yes" else str(state.get("on_no", ""))
+            if not message:
+                message = "Interactive response recorded."
+            return {
+                "final_output": message,
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "interactive_response",
+                "interactive_prompt_active": False,
+            }
+
+        self._interactive_prompt_state = None
+        return {
+            "final_output": "Interactive prompt expired. Send your request again.",
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "interactive_response",
+            "interactive_prompt_active": False,
+        }
+
+    def _is_website_build_request(self, utterance: str) -> bool:
+        normalized = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not normalized:
+            return False
+        has_build = any(re.search(rf"\b{re.escape(verb)}\b", normalized) for verb in _WEBSITE_BUILD_VERBS)
+        has_target = any(token in normalized for token in _WEBSITE_BUILD_TARGET_TOKENS)
+        if not (has_build and has_target):
+            return False
+        if "execute" in normalized or "run now" in normalized or "run immediately" in normalized:
+            return False
+        return True
+
+    def _extract_website_filename(self, utterance: str) -> str:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        match = re.search(r"\b([a-z0-9._-]+\.html)\b", lowered)
+        if match is not None:
+            return str(match.group(1))
+        return ""
+
+    def _website_style_requested(self, utterance: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return False
+        style_tokens = ("style", "styles", "css", "tailwind", "bootstrap", "theme")
+        return any(token in lowered for token in style_tokens)
+
+    def _website_context_active(self) -> bool:
+        last_subject = str(self._conversation_context.get("last_subject_noun", "")).strip().lower()
+        last_input = str(self._conversation_context.get("last_user_input", "")).strip().lower()
+        if any(token in last_subject for token in ("website", "web page", "html")):
+            return True
+        return ".html" in last_input or "html file" in last_input or "website page" in last_input
+
+    def _extract_website_filename_override(self, utterance: str) -> str | None:
+        if self._is_website_build_request(utterance):
+            return None
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return None
+        match = re.search(r"\b([a-z0-9._-]+\.html)\b", lowered)
+        if match is None:
+            return None
+        candidate = str(match.group(1))
+        override_cues = ("use ", "instead", "rename", "change", "call it", "make it", "filename")
+        if any(cue in lowered for cue in override_cues):
+            return candidate
+        if self._website_context_active():
+            compact = re.sub(r"[!?.,]+$", "", lowered)
+            if compact == candidate:
+                return candidate
+        return None
+
+    def _website_example_html(self, *, title: str = "Test Page", include_style: bool = False) -> str:
+        safe_title = str(title or "Test Page").strip() or "Test Page"
+        style_block = ""
+        body_open = "<body>\n"
+        body_close = "</body>\n"
+        card_open = ""
+        card_close = ""
+        if include_style:
+            style_block = (
+                "  <style>\n"
+                "    body { font-family: Georgia, serif; margin: 2rem; background: #f6f5ef; color: #1f2933; }\n"
+                "    .card { max-width: 42rem; padding: 1.5rem; border: 1px solid #d8d5c2; background: #fffdf6; }\n"
+                "  </style>\n"
+            )
+            card_open = "  <main class=\"card\">\n"
+            card_close = "  </main>\n"
+        else:
+            card_open = "  <main>\n"
+            card_close = "  </main>\n"
+        return (
+            "<!doctype html>\n"
+            "<html lang=\"en\">\n"
+            "<head>\n"
+            "  <meta charset=\"utf-8\" />\n"
+            "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n"
+            f"  <title>{safe_title}</title>\n"
+            f"{style_block}"
+            "</head>\n"
+            f"{body_open}"
+            f"{card_open}"
+            "    <h1>test page</h1>\n"
+            "    <p>Starter HTML prepared in advisory mode. NOT EXECUTED.</p>\n"
+            f"{card_close}"
+            f"{body_close}"
+            "</html>"
+        )
+
+    def _replace_terminal_filler(self, response_text: str) -> str:
+        text = str(response_text or "").strip()
+        lowered = text.lower().rstrip(".!?")
+        if lowered in _TERMINAL_FILLER_PHRASES:
+            subject = str(self._conversation_context.get("last_subject_noun", "")).strip() or "the request"
+            return (
+                f"I can help with {subject}, but I need one detail first: what outcome do you want and where should it live?"
+            )
+        return text
+
+    def _normalize_advisory_commands(self, commands: Any) -> List[str]:
+        if not isinstance(commands, list):
+            return []
+        normalized: List[str] = []
+        for item in commands:
+            command = str(item or "").strip()
+            if not command:
+                continue
+            if command.startswith("NOT EXECUTED:"):
+                normalized.append(command)
+            else:
+                normalized.append(f"NOT EXECUTED: {command}")
+        return normalized
+
+    def _advisory_continuation_question(self, advisory_output: Dict[str, Any]) -> str:
+        if any(str(advisory_output.get(key, "")).strip() for key in ("example_html", "starter_code", "starter_html", "html")):
+            return "Do you want me to adjust this HTML before you run anything manually?"
+        escalation = advisory_output.get("escalation", {})
+        if isinstance(escalation, dict) and str(escalation.get("next_step", "")).strip() == "request_governed_proposal":
+            return "Do you want to submit this as a governed proposal?"
+        if str(advisory_output.get("status", "")).strip() == "clarification_required":
+            return "Do you want to refine the request so I can produce a concrete plan?"
+        return "Do you want me to refine this plan for your exact environment?"
+
+    def _render_advisory_text(self, advisory_output: Dict[str, Any], continuation_question: str) -> str:
+        lines: List[str] = []
+
+        message = str(advisory_output.get("message", "")).strip()
+        if message:
+            lines.append(message)
+
+        plan_steps = advisory_output.get("plan_steps", [])
+        if isinstance(plan_steps, list) and plan_steps:
+            lines.append("")
+            lines.append("Plan Steps:")
+            for index, step in enumerate(plan_steps, start=1):
+                lines.append(f"{index}. {str(step)}")
+
+        starter_block = ""
+        for key in ("starter_code", "starter_html", "example_html", "html"):
+            value = advisory_output.get(key)
+            if isinstance(value, str) and value.strip():
+                starter_block = value.strip()
+                break
+        if starter_block:
+            lines.append("")
+            lines.append("Starter Code / HTML:")
+            lines.append(starter_block)
+
+        commands = self._normalize_advisory_commands(advisory_output.get("suggested_commands", []))
+        if commands:
+            lines.append("")
+            lines.append("Suggested Commands:")
+            lines.extend(commands)
+
+        risk_notes = advisory_output.get("risk_notes", [])
+        if isinstance(risk_notes, list) and risk_notes:
+            lines.append("")
+            lines.append("Risk Notes:")
+            for note in risk_notes:
+                lines.append(f"- {str(note)}")
+
+        assumptions = advisory_output.get("assumptions", [])
+        if isinstance(assumptions, list) and assumptions:
+            lines.append("")
+            lines.append("Assumptions:")
+            for assumption in assumptions:
+                lines.append(f"- {str(assumption)}")
+
+        task_artifact = advisory_output.get("task_artifact", {})
+        if isinstance(task_artifact, dict) and task_artifact:
+            artifact_name = str(task_artifact.get("name", "")).strip()
+            artifact_type = str(task_artifact.get("type", "")).strip()
+            artifact_revision = task_artifact.get("revision", "")
+            artifact_revision_id = str(task_artifact.get("revision_id", "")).strip()
+            artifact_summary = str(task_artifact.get("summary", "")).strip()
+            lines.append("")
+            lines.append("Task Artifact:")
+            descriptor = f"- {artifact_name}"
+            if artifact_type:
+                descriptor += f" ({artifact_type})"
+            if isinstance(artifact_revision, int):
+                descriptor += f" rev {artifact_revision}"
+            if artifact_revision_id:
+                descriptor += f" [{artifact_revision_id}]"
+            lines.append(descriptor)
+            if artifact_summary:
+                lines.append(f"- {artifact_summary}")
+
+        artifact_diff = advisory_output.get("artifact_diff", {})
+        if isinstance(artifact_diff, dict) and artifact_diff:
+            lines.append("")
+            lines.append("Artifact Diff:")
+            lines.append(str(artifact_diff.get("diff_text", "")).strip())
+
+        lines.append("")
+        lines.append(continuation_question)
+        return "\n".join(lines).strip()
+
+    def _prepare_advisory_output(self, advisory_output: Dict[str, Any]) -> Dict[str, Any]:
+        prepared = copy.deepcopy(advisory_output)
+        commands = self._normalize_advisory_commands(prepared.get("suggested_commands", []))
+        if commands:
+            prepared["suggested_commands"] = commands
+        continuation_question = self._advisory_continuation_question(prepared)
+        prepared["continuation_question"] = continuation_question
+        prepared["rendered_advisory"] = self._render_advisory_text(prepared, continuation_question)
+        return prepared
+
+    def _build_follow_up_advisory_response(
+        self,
+        *,
+        follow_up: str,
+        trace_id: str,
+    ) -> Dict[str, Any] | None:
+        prior_input = str(self._conversation_context.get("last_user_input", "")).strip()
+        if not prior_input:
+            return None
+        prior_intent = str(self._conversation_context.get("last_user_intent", "")).strip()
+        advisory_intent = prior_intent if prior_intent in {"planning_request", "advisory_request"} else "planning_request"
+        advisory_output = build_advisory_plan(
+            utterance=prior_input,
+            intent_class=advisory_intent,
+        )
+        subject = str(self._conversation_context.get("last_subject_noun", "")).strip() or "your previous request"
+        prompt = {
+            "how": f"Follow-up resolved: here is how to proceed with {subject}. Commands remain NOT EXECUTED.",
+            "when": (
+                f"Follow-up resolved: do this when you are ready to apply changes to {subject}. "
+                "Validate each step before moving on."
+            ),
+            "where": (
+                f"Follow-up resolved: apply these steps in the workspace location where {subject} should be created. "
+                "Nothing was executed."
+            ),
+            "who": (
+                "Follow-up resolved: you (human operator) run these commands manually. "
+                "Billy remains advisory-only here."
+            ),
+        }[follow_up]
+        advisory_output["message"] = prompt
+        advisory_output["follow_up"] = {
+            "question": follow_up,
+            "resolved_from": prior_input,
+            "subject": subject,
+            "context_mode": str(self._conversation_context.get("last_system_mode", "")).strip() or "conversation_layer",
+        }
+        advisory_output = self._prepare_advisory_output(advisory_output)
+        self._activate_interactive_prompt_from_advisory(
+            advisory_output=advisory_output,
+            trace_id=trace_id,
+        )
+        response = {
+            "final_output": advisory_output,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "advisory",
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
+        self._remember_conversational_context(
+            user_input=prior_input,
+            intent_class=advisory_intent,
+            mode="advisory",
+        )
+        return response
+
+    def _build_website_advisory_response(
+        self,
+        *,
+        utterance: str,
+        trace_id: str,
+        filename_override: str | None = None,
+    ) -> Dict[str, Any]:
+        requested_filename = str(filename_override or "").strip() or self._extract_website_filename(utterance)
+        used_default_filename = not bool(requested_filename)
+        filename = requested_filename or "index.html"
+        include_style = self._website_style_requested(utterance)
+        advisory_output = build_advisory_plan(
+            utterance=f"plan website page {filename}",
+            intent_class="planning_request",
+        )
+        advisory_output["message"] = (
+            "Advisory website plan prepared. Starter HTML and commands are suggestions only and were NOT EXECUTED."
+        )
+        advisory_output["example_html"] = self._website_example_html(title=filename, include_style=include_style)
+        advisory_output["suggested_commands"] = [
+            f"NOT EXECUTED: cat > {filename} <<'HTML'",
+            "NOT EXECUTED: (paste the example_html content)",
+            "NOT EXECUTED: HTML",
+            "NOT EXECUTED: python -m http.server 8000",
+        ]
+        assumptions = advisory_output.get("assumptions", [])
+        assumptions = assumptions if isinstance(assumptions, list) else []
+        default_assumptions: List[str] = []
+        if used_default_filename:
+            default_assumptions.append(
+                "Default: assuming `index.html` for now - you can change this anytime."
+            )
+        default_assumptions.append("Default: treat this as a local file workflow only (not deployed).")
+        default_assumptions.append("Default: start from a minimal HTML scaffold.")
+        if not include_style:
+            default_assumptions.append("Default: no styling is applied unless you request CSS.")
+        advisory_output["assumptions"] = default_assumptions + assumptions
+        self._session_defaults["website_filename"] = filename
+        html_artifact = self._upsert_task_artifact(
+            name="html_page",
+            artifact_type="html_page",
+            content={
+                "filename": filename,
+                "html": str(advisory_output.get("example_html", "")).strip(),
+                "include_style": include_style,
+            },
+            summary=f"HTML draft artifact for {filename} (session-scoped, non-executing).",
+            source_mode="advisory",
+        )
+        advisory_output["task_artifact"] = self._artifact_public_view(html_artifact)
+        advisory_output = self._prepare_advisory_output(advisory_output)
+        self._activate_interactive_prompt_from_advisory(
+            advisory_output=advisory_output,
+            trace_id=trace_id,
+        )
+        response = {
+            "final_output": advisory_output,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "advisory",
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
+        self._remember_conversational_context(
+            user_input=utterance,
+            intent_class="planning_request",
+            mode="advisory",
+        )
+        return response
+
+    def _aci_authority_guarantees(self) -> Dict[str, bool]:
+        return {
+            "can_execute": False,
+            "can_invoke_tools": False,
+            "can_mutate_state": False,
+            "can_delegate": False,
+            "can_background_process": False,
+            "can_auto_apply": False,
+            "can_auto_route": False,
+            "can_escalate_authority": False,
+        }
+
+    def _aci_result(
+        self,
+        *,
+        final_output: Dict[str, Any],
+        trace_id: str,
+        status: str,
+        mode: str,
+        routing_intent: str,
+        routing_confidence: float,
+        gatekeeper_reason_code: str,
+        current_phase: int,
+    ) -> Dict[str, Any]:
+        return {
+            "final_output": final_output,
+            "tool_calls": [],
+            "status": status,
+            "trace_id": trace_id,
+            "mode": mode,
+            "intent_class": routing_intent,
+            "intent_confidence": routing_confidence,
+            "gatekeeper_reason_code": gatekeeper_reason_code,
+            "current_phase": current_phase,
+            "execution_enabled": False,
+            "authority_guarantees": self._aci_authority_guarantees(),
+        }
+
+    def _aci_environment_id(self, session_context: Dict[str, Any]) -> str:
+        if isinstance(session_context, dict):
+            value = session_context.get("environment_id")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return "default"
+
+    def _aci_issuer_identity_id(self, session_context: Dict[str, Any]) -> str:
+        if isinstance(session_context, dict):
+            value = session_context.get("issuer_identity_id")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return "human"
+
+    def _aci_resolve_lineage_refs(
+        self,
+        *,
+        current_phase: int,
+        environment_id: str,
+        session_context: Dict[str, Any],
+    ) -> tuple[List[str] | None, str]:
+        if isinstance(session_context, dict):
+            provided = session_context.get("lineage_refs")
+            if isinstance(provided, list):
+                normalized = [str(item).strip() for item in provided if str(item).strip()]
+                deduped = sorted(set(normalized))
+                return deduped, "OK"
+
+        phase_records = self._aci_issuance_ledger.lookup_by_phase_id(current_phase)
+        candidates = [
+            item
+            for item in phase_records
+            if (
+                str(item.get("environment_id", "")) == environment_id
+                and not self._aci_issuance_ledger.is_artifact_revoked(str(item.get("artifact_id", "")))
+            )
+        ]
+        if not candidates:
+            return [], "OK"
+        if len(candidates) > 1:
+            return None, "ISSUANCE_LINEAGE_AMBIGUOUS"
+        artifact_id = str(candidates[0].get("artifact_id", "")).strip()
+        if not artifact_id:
+            return None, "ISSUANCE_LINEAGE_AMBIGUOUS"
+        return [artifact_id], "OK"
 
     def resolve_identity_question(self, input_str: str) -> str | None:
         """
@@ -4202,6 +6017,14 @@ class BillyRuntime:
     def _render_user_output(self, result: Dict[str, Any]) -> str:
         final_output = result.get("final_output")
         if isinstance(final_output, dict):
+            output_mode = str(result.get("mode", "")).strip()
+            payload_mode = str(final_output.get("mode", "")).strip()
+            if output_mode == "advisory" or payload_mode == "advisory":
+                rendered = final_output.get("rendered_advisory")
+                if not isinstance(rendered, str) or not rendered.strip():
+                    rendered = self._prepare_advisory_output(final_output).get("rendered_advisory", "")
+                if isinstance(rendered, str) and rendered.strip():
+                    return rendered
             required = {"task_id", "resolution_type", "message", "next_step"}
             if required.issubset(final_output.keys()):
                 return str(final_output.get("message", ""))
@@ -4262,6 +6085,36 @@ class BillyRuntime:
         assert_explicit_memory_write(user_input)
         normalized_input = user_input.strip()
         lowered_input = normalized_input.lower()
+
+        bound_interaction = self._handle_bound_interactive_turn(
+            user_input=normalized_input,
+            trace_id=trace_id,
+        )
+        if bound_interaction is not None:
+            return bound_interaction
+
+        mode_response = self._handle_activity_mode_turn(
+            user_input=normalized_input,
+            trace_id=trace_id,
+        )
+        if mode_response is not None:
+            return mode_response
+
+        if self._is_vocabulary_quiz_request(normalized_input):
+            return self._build_vocabulary_quiz_prompt(trace_id=trace_id)
+
+        current_phase = ACI_MIN_PHASE
+        if isinstance(session_context, dict):
+            maybe_phase = session_context.get("current_phase")
+            if isinstance(maybe_phase, int):
+                current_phase = maybe_phase
+            elif isinstance(maybe_phase, str) and maybe_phase.strip().isdigit():
+                current_phase = int(maybe_phase.strip())
+        if current_phase < ACI_MIN_PHASE:
+            current_phase = ACI_MIN_PHASE
+        if current_phase > ACI_MAX_PHASE:
+            current_phase = ACI_MAX_PHASE
+
         secretary_result: Dict[str, Any] | None = None
         if (
             normalized_input
@@ -4273,27 +6126,440 @@ class BillyRuntime:
             and lowered_input not in {"ignored", "continue"}
         ):
             secretary_result = process_conversational_turn(normalized_input)
-            if bool(secretary_result.get("escalate")):
-                governed_input = secretary_result.get("intent_envelope", {})
-                governed_result = run_governed_interpreter(
-                    governed_input if isinstance(governed_input, dict) else {}
+
+        ladder_state = LadderState(current_phase=current_phase)
+        admissible_transitions = derive_admissible_phase_transitions(ladder_state)
+        routing_result = route_intent(
+            raw_utterance=normalized_input,
+            current_phase=current_phase,
+            admissible_phase_transitions=[t.artifact_type for t in admissible_transitions],
+        )
+        confirm_target = _extract_confirm_issuance_request(normalized_input)
+        revoke_target = _extract_revoke_artifact_request(normalized_input)
+        supersede_request = _extract_supersede_artifact_request(normalized_input)
+        environment_id = self._aci_environment_id(session_context if isinstance(session_context, dict) else {})
+        issuer_identity_id = self._aci_issuer_identity_id(session_context if isinstance(session_context, dict) else {})
+        should_route_aci = (
+            bool((secretary_result or {}).get("escalate"))
+            or confirm_target is not None
+            or revoke_target is not None
+            or supersede_request is not None
+            or routing_result.intent_class is INTENT_CLASS.GOVERNANCE_ISSUANCE
+        )
+
+        if not should_route_aci:
+            artifact_response = self._handle_task_artifact_turn(
+                user_input=normalized_input,
+                trace_id=trace_id,
+            )
+            if artifact_response is not None:
+                return artifact_response
+
+        follow_up = self._follow_up_key(normalized_input)
+        if not should_route_aci and follow_up is not None:
+            follow_up_response = self._build_follow_up_advisory_response(
+                follow_up=follow_up,
+                trace_id=trace_id,
+            )
+            if follow_up_response is not None:
+                return follow_up_response
+
+        if not should_route_aci:
+            override_filename = self._extract_website_filename_override(normalized_input)
+            if override_filename is not None:
+                base_request = str(self._conversation_context.get("last_user_input", "")).strip() or normalized_input
+                return self._build_website_advisory_response(
+                    utterance=base_request,
+                    trace_id=trace_id,
+                    filename_override=override_filename,
                 )
-                raw_governed = governed_result.get("governed_result", {})
-                result_type = str((raw_governed or {}).get("type", ""))
-                error_types = {
-                    "approval_rejected",
-                    "approval_expired",
-                    "execution_rejected",
-                    "plan_rejected",
+
+        if not should_route_aci and self._is_website_build_request(normalized_input):
+            return self._build_website_advisory_response(
+                utterance=normalized_input,
+                trace_id=trace_id,
+            )
+
+        if should_route_aci:
+            gatekeeper_result = phase_gatekeeper(
+                intent_class=routing_result.intent_class,
+                current_phase=current_phase,
+                ladder_state=ladder_state,
+            )
+            envelope = build_response_envelope(
+                routing=routing_result,
+                gate=gatekeeper_result,
+                current_phase=current_phase,
+            )
+
+            def _issuance_refusal(reason_code: str, explanation: str, allowed_alternatives: List[str]) -> Dict[str, Any]:
+                refusal_envelope = {
+                    "type": "refusal",
+                    "reason_code": reason_code,
+                    "explanation": explanation,
+                    "allowed_alternatives": list(allowed_alternatives),
                 }
+                return self._aci_result(
+                    final_output=refusal_envelope,
+                    trace_id=trace_id,
+                    status="error",
+                    mode="aci_issuance_gatekeeper",
+                    routing_intent=routing_result.intent_class.value,
+                    routing_confidence=routing_result.confidence,
+                    gatekeeper_reason_code=reason_code,
+                    current_phase=current_phase,
+                )
+
+            if confirm_target is not None:
+                if not gatekeeper_result.admissible:
+                    return _issuance_refusal(
+                        gatekeeper_result.deterministic_reason_code,
+                        "Issuance confirmation rejected because the next transition is not admissible.",
+                        gatekeeper_result.allowed_alternatives,
+                    )
+
+                pending = self._aci_pending_proposal
+                expected_artifact = (
+                    str(pending.get("contract_name", "")).strip()
+                    if isinstance(pending, dict)
+                    else str(gatekeeper_result.allowed_next_artifact or "").strip()
+                )
+                if pending is None:
+                    if not expected_artifact:
+                        return _issuance_refusal(
+                            "ISSUANCE_CONFIRMATION_WITHOUT_PROPOSAL",
+                            "Issuance confirmation rejected: no pending proposal exists for this transition.",
+                            gatekeeper_result.allowed_alternatives,
+                        )
+                    lineage_refs, lineage_code = self._aci_resolve_lineage_refs(
+                        current_phase=current_phase,
+                        environment_id=environment_id,
+                        session_context=session_context if isinstance(session_context, dict) else {},
+                    )
+                    if lineage_refs is None:
+                        return _issuance_refusal(
+                            lineage_code,
+                            "Issuance confirmation rejected because lineage resolution is ambiguous.",
+                            [expected_artifact],
+                        )
+                    transition_key = compute_transition_key(
+                        phase_id=current_phase + 1,
+                        contract_name=expected_artifact,
+                        environment_id=environment_id,
+                        lineage_refs=lineage_refs,
+                    )
+                    if (
+                        transition_key == self._aci_last_consumed_transition_key
+                        or self._aci_issuance_ledger.has_transition_key(transition_key)
+                    ):
+                        return _issuance_refusal(
+                            "ISSUANCE_CONFIRMATION_REPLAYED",
+                            "Issuance confirmation rejected: this transition was already confirmed and issued.",
+                            [expected_artifact],
+                        )
+                    return _issuance_refusal(
+                        "ISSUANCE_CONFIRMATION_WITHOUT_PROPOSAL",
+                        "Issuance confirmation rejected: no pending proposal exists for this transition.",
+                        [expected_artifact],
+                    )
+
+                pending_action = str(pending.get("action", "issue"))
+                pending_artifact = str(pending.get("contract_name", "")).strip()
+                pending_phase = int(pending.get("current_phase", current_phase))
+                pending_environment = str(pending.get("environment_id", "")).strip()
+                if pending_phase != current_phase or pending_environment != environment_id:
+                    return _issuance_refusal(
+                        "ISSUANCE_PENDING_PROPOSAL_STALE",
+                        "Issuance confirmation rejected: pending proposal no longer matches current phase state.",
+                        [pending_artifact],
+                    )
+                if confirm_target and confirm_target != pending_artifact:
+                    return _issuance_refusal(
+                        "ISSUANCE_CONFIRMATION_TARGET_MISMATCH",
+                        "Issuance confirmation rejected: explicit confirmation target does not match pending artifact.",
+                        [pending_artifact],
+                    )
+
+                issuance_result = None
+                if pending_action == "issue":
+                    lineage_refs, lineage_code = self._aci_resolve_lineage_refs(
+                        current_phase=current_phase,
+                        environment_id=environment_id,
+                        session_context=session_context if isinstance(session_context, dict) else {},
+                    )
+                    if lineage_refs is None:
+                        return _issuance_refusal(
+                            lineage_code,
+                            "Issuance confirmation rejected because lineage resolution is ambiguous.",
+                            [pending_artifact],
+                        )
+                    issuance_result = self._aci_issuance_ledger.append_issued_artifact(
+                        phase_id=current_phase + 1,
+                        contract_name=pending_artifact,
+                        issuer_identity_id=issuer_identity_id,
+                        environment_id=environment_id,
+                        lineage_refs=lineage_refs,
+                        request_context={
+                            "confirmation_command": normalized_input,
+                            "proposal_created_at": str(pending.get("created_at", "")),
+                            "proposal_reason": str(pending.get("reason", "")),
+                            "trace_id": trace_id,
+                        },
+                        lineage_required=current_phase > ACI_MIN_PHASE,
+                    )
+                elif pending_action == "revoke":
+                    issuance_result = self._aci_issuance_ledger.append_revocation_record(
+                        revoked_artifact_id=str(pending.get("revoked_artifact_id", "")).strip(),
+                        revocation_reason=str(pending.get("revocation_reason", "")).strip(),
+                        issuer_identity_id=issuer_identity_id,
+                        environment_id=environment_id,
+                        request_context={
+                            "confirmation_command": normalized_input,
+                            "proposal_created_at": str(pending.get("created_at", "")),
+                            "trace_id": trace_id,
+                        },
+                    )
+                elif pending_action == "supersede":
+                    issuance_result = self._aci_issuance_ledger.append_supersession_record(
+                        superseded_artifact_id=str(pending.get("superseded_artifact_id", "")).strip(),
+                        replacement_artifact_id=str(pending.get("replacement_artifact_id", "")).strip(),
+                        issuer_identity_id=issuer_identity_id,
+                        environment_id=environment_id,
+                        request_context={
+                            "confirmation_command": normalized_input,
+                            "proposal_created_at": str(pending.get("created_at", "")),
+                            "trace_id": trace_id,
+                        },
+                    )
+                else:
+                    return _issuance_refusal(
+                        "ISSUANCE_PENDING_ACTION_INVALID",
+                        "Issuance confirmation rejected: pending proposal action is invalid.",
+                        [],
+                    )
+
+                if issuance_result is None:
+                    return _issuance_refusal(
+                        "ISSUANCE_PENDING_ACTION_INVALID",
+                        "Issuance confirmation rejected: pending proposal action is invalid.",
+                        [],
+                    )
+                if not issuance_result.ok or issuance_result.record is None:
+                    if issuance_result.reason_code in {
+                        "ISSUANCE_DUPLICATE_FOR_LINEAGE",
+                        "REVOCATION_ALREADY_REVOKED",
+                        "REVOCATION_DUPLICATE",
+                        "SUPERSESSION_ALREADY_EXISTS",
+                        "SUPERSESSION_DUPLICATE",
+                    }:
+                        self._aci_pending_proposal = None
+                    return _issuance_refusal(
+                        issuance_result.reason_code,
+                        "Issuance confirmation rejected by deterministic ledger validation.",
+                        [pending_artifact],
+                    )
+
+                self._aci_pending_proposal = None
+                self._aci_last_consumed_transition_key = str(issuance_result.record.get("transition_key", ""))
+                receipt = build_receipt_envelope(issuance_result.record)
+                return self._aci_result(
+                    final_output=receipt,
+                    trace_id=trace_id,
+                    status="success",
+                    mode="aci_issuance_receipt",
+                    routing_intent=routing_result.intent_class.value,
+                    routing_confidence=routing_result.confidence,
+                    gatekeeper_reason_code="ISSUANCE_RECORDED",
+                    current_phase=current_phase,
+                )
+
+            if revoke_target is not None:
+                if not gatekeeper_result.admissible:
+                    return _issuance_refusal(
+                        gatekeeper_result.deterministic_reason_code,
+                        "Revocation request rejected because intent is not admissible at the current phase.",
+                        gatekeeper_result.allowed_alternatives,
+                    )
+                target_record = self._aci_issuance_ledger.lookup_by_artifact_id(revoke_target)
+                if target_record is None:
+                    return _issuance_refusal(
+                        "REVOCATION_TARGET_NOT_FOUND",
+                        "Revocation request rejected: target artifact was not found.",
+                        [],
+                    )
+                if str(target_record.get("environment_id", "")).strip() != environment_id:
+                    return _issuance_refusal(
+                        "REVOCATION_ENVIRONMENT_MISMATCH",
+                        "Revocation request rejected: target artifact is in a different environment.",
+                        [],
+                    )
+                if self._aci_issuance_ledger.is_artifact_revoked(revoke_target):
+                    replacement = self._aci_issuance_ledger.get_supersession_replacement(revoke_target)
+                    if replacement:
+                        return _issuance_refusal(
+                            "REVOCATION_ALREADY_SUPERSEDED",
+                            "Revocation request rejected: artifact is already revoked and superseded.",
+                            [f"supersede:{replacement}"],
+                        )
+                    return _issuance_refusal(
+                        "REVOCATION_ALREADY_REVOKED",
+                        "Revocation request rejected: artifact is already revoked.",
+                        [],
+                    )
+                self._aci_pending_proposal = {
+                    "action": "revoke",
+                    "current_phase": current_phase,
+                    "contract_name": REVOCATION_CONTRACT_NAME,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "revoked_artifact_id": revoke_target,
+                    "revocation_reason": "explicit_human_revocation",
+                    "environment_id": environment_id,
+                    "issuer_identity_id": issuer_identity_id,
+                }
+                revoke_proposal = {
+                    "type": "proposal",
+                    "next_artifact": REVOCATION_CONTRACT_NAME,
+                    "reason": (
+                        f"Revocation intent is admissible at phase {current_phase}; target artifact is `{revoke_target}`."
+                    ),
+                    "question": "Shall I prepare this?",
+                }
+                return self._aci_result(
+                    final_output=revoke_proposal,
+                    trace_id=trace_id,
+                    status="success",
+                    mode="aci_issuance_gatekeeper",
+                    routing_intent=routing_result.intent_class.value,
+                    routing_confidence=routing_result.confidence,
+                    gatekeeper_reason_code="ADMISSIBLE_REVOCATION_PROPOSAL",
+                    current_phase=current_phase,
+                )
+
+            if supersede_request is not None:
+                if not gatekeeper_result.admissible:
+                    return _issuance_refusal(
+                        gatekeeper_result.deterministic_reason_code,
+                        "Supersession request rejected because intent is not admissible at the current phase.",
+                        gatekeeper_result.allowed_alternatives,
+                    )
+                superseded_artifact_id, replacement_artifact_id = supersede_request
+                old_record = self._aci_issuance_ledger.lookup_by_artifact_id(superseded_artifact_id)
+                if old_record is None:
+                    return _issuance_refusal(
+                        "SUPERSESSION_OLD_NOT_FOUND",
+                        "Supersession request rejected: superseded artifact was not found.",
+                        [],
+                    )
+                replacement_record = self._aci_issuance_ledger.lookup_by_artifact_id(replacement_artifact_id)
+                if replacement_record is None:
+                    return _issuance_refusal(
+                        "SUPERSESSION_REPLACEMENT_NOT_FOUND",
+                        "Supersession request rejected: replacement artifact was not found.",
+                        [],
+                    )
+                if str(old_record.get("environment_id", "")).strip() != environment_id or str(
+                    replacement_record.get("environment_id", "")
+                ).strip() != environment_id:
+                    return _issuance_refusal(
+                        "SUPERSESSION_ENVIRONMENT_MISMATCH",
+                        "Supersession request rejected: artifact environment mismatch.",
+                        [],
+                    )
+                if not self._aci_issuance_ledger.is_artifact_revoked(superseded_artifact_id):
+                    return _issuance_refusal(
+                        "SUPERSESSION_OLD_NOT_REVOKED",
+                        "Supersession request rejected: superseded artifact must already be revoked.",
+                        [],
+                    )
+                if self._aci_issuance_ledger.is_artifact_revoked(replacement_artifact_id):
+                    return _issuance_refusal(
+                        "SUPERSESSION_REPLACEMENT_REVOKED",
+                        "Supersession request rejected: replacement artifact is revoked and inadmissible.",
+                        [],
+                    )
+                if self._aci_issuance_ledger.get_supersession_replacement(superseded_artifact_id) is not None:
+                    return _issuance_refusal(
+                        "SUPERSESSION_ALREADY_EXISTS",
+                        "Supersession request rejected: superseded artifact already has a replacement.",
+                        [],
+                    )
+                self._aci_pending_proposal = {
+                    "action": "supersede",
+                    "current_phase": current_phase,
+                    "contract_name": SUPERSESSION_CONTRACT_NAME,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "superseded_artifact_id": superseded_artifact_id,
+                    "replacement_artifact_id": replacement_artifact_id,
+                    "environment_id": environment_id,
+                    "issuer_identity_id": issuer_identity_id,
+                }
+                supersede_proposal = {
+                    "type": "proposal",
+                    "next_artifact": SUPERSESSION_CONTRACT_NAME,
+                    "reason": (
+                        "Supersession intent is admissible at phase "
+                        f"{current_phase}; `{superseded_artifact_id}` -> `{replacement_artifact_id}`."
+                    ),
+                    "question": "Shall I prepare this?",
+                }
+                return self._aci_result(
+                    final_output=supersede_proposal,
+                    trace_id=trace_id,
+                    status="success",
+                    mode="aci_issuance_gatekeeper",
+                    routing_intent=routing_result.intent_class.value,
+                    routing_confidence=routing_result.confidence,
+                    gatekeeper_reason_code="ADMISSIBLE_SUPERSESSION_PROPOSAL",
+                    current_phase=current_phase,
+                )
+
+            if envelope.get("type") == "proposal":
+                self._aci_pending_proposal = {
+                    "action": "issue",
+                    "current_phase": current_phase,
+                    "contract_name": str(envelope.get("next_artifact", "")),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "reason": str(envelope.get("reason", "")),
+                    "environment_id": environment_id,
+                    "issuer_identity_id": issuer_identity_id,
+                }
+
+            return self._aci_result(
+                final_output=envelope,
+                trace_id=trace_id,
+                status="success" if envelope.get("type") in {"proposal", "clarification"} else "error",
+                mode="aci_intent_gatekeeper",
+                routing_intent=routing_result.intent_class.value,
+                routing_confidence=routing_result.confidence,
+                gatekeeper_reason_code=gatekeeper_result.deterministic_reason_code,
+                current_phase=current_phase,
+            )
+
+        if isinstance(secretary_result, dict) and not bool(secretary_result.get("escalate")):
+            secretary_intent = str(secretary_result.get("intent_class", ""))
+            if secretary_intent in {"advisory_request", "planning_request"}:
+                advisory_output = build_advisory_plan(
+                    utterance=normalized_input,
+                    intent_class=secretary_intent,
+                )
+                advisory_output = self._prepare_advisory_output(advisory_output)
+                self._activate_interactive_prompt_from_advisory(
+                    advisory_output=advisory_output,
+                    trace_id=trace_id,
+                )
+                self._remember_conversational_context(
+                    user_input=normalized_input,
+                    intent_class=secretary_intent,
+                    mode="advisory",
+                )
                 return {
-                    "final_output": str(governed_result.get("response", "")),
+                    "final_output": advisory_output,
                     "tool_calls": [],
-                    "status": "error" if result_type in error_types else "success",
+                    "status": "success",
                     "trace_id": trace_id,
-                    "mode": "governed_interpreter",
-                    "governed_result": raw_governed,
-                    "intent": str(governed_result.get("intent", "")),
+                    "mode": "advisory",
+                    "execution_enabled": False,
+                    "advisory_only": True,
                 }
 
         interaction_dispatch = _dispatch_interaction(self, normalized_input)
@@ -4305,8 +6571,21 @@ class BillyRuntime:
                 and isinstance(secretary_result, dict)
                 and not bool(secretary_result.get("escalate"))
             ):
+                secretary_intent = str(secretary_result.get("intent_class", "")).strip() or "ambiguous_intent"
+                chat_response = self._replace_terminal_filler(
+                    str(secretary_result.get("chat_response", ""))
+                )
+                if not chat_response:
+                    chat_response = (
+                        "I need a more specific request. Tell me what outcome you want and any constraints."
+                    )
+                self._remember_conversational_context(
+                    user_input=normalized_input,
+                    intent_class=secretary_intent,
+                    mode="conversation",
+                )
                 return {
-                    "final_output": str(secretary_result.get("chat_response", "I can help with that.")),
+                    "final_output": chat_response,
                     "tool_calls": [],
                     "status": "success",
                     "trace_id": trace_id,
@@ -4321,6 +6600,11 @@ class BillyRuntime:
             }
 
         if interaction_route == "identity":
+            self._remember_conversational_context(
+                user_input=normalized_input,
+                intent_class="informational_query",
+                mode="conversation",
+            )
             return {
                 "final_output": interaction_dispatch.get("response", ""),
                 "tool_calls": [],
@@ -4340,11 +6624,17 @@ class BillyRuntime:
             if not isinstance(prompt, str) or not prompt.strip():
                 prompt = normalized_input
             generated_text = self._llm_answer(prompt)
+            generated_text = self._replace_terminal_filler(generated_text)
             self._last_content_generation_response = {
                 "text": generated_text,
                 "origin_turn_id": trace_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
+            self._remember_conversational_context(
+                user_input=normalized_input,
+                intent_class="generative_content_request",
+                mode="conversation",
+            )
             return {
                 "final_output": generated_text,
                 "tool_calls": [],
@@ -4626,6 +6916,11 @@ class BillyRuntime:
                 "read_only_conversation_identity_location",
             ):
                 if route_type == "read_only_conversation_identity_location":
+                    self._remember_conversational_context(
+                        user_input=normalized_input,
+                        intent_class="informational_query",
+                        mode="conversation",
+                    )
                     return {
                         "final_output": _IDENTITY_LOCATION_CONCEPTUAL_RESPONSE,
                         "tool_calls": [],
@@ -4635,11 +6930,17 @@ class BillyRuntime:
                     }
 
                 response = {
-                    "final_output": self._llm_answer(route_payload),
+                    "final_output": self._replace_terminal_filler(self._llm_answer(route_payload)),
                     "tool_calls": [],
                     "status": "success",
                     "trace_id": trace_id,
                 }
+                secretary_intent = str((secretary_result or {}).get("intent_class", "")).strip() or "informational_query"
+                self._remember_conversational_context(
+                    user_input=normalized_input,
+                    intent_class=secretary_intent,
+                    mode="conversation",
+                )
                 if route_type == "read_only_conversation":
                     response["mode"] = "read_only_conversation"
                 return response
@@ -6022,7 +8323,7 @@ class BillyRuntime:
             }
 
         return {
-            "final_output": self._llm_answer(user_input),
+            "final_output": self._replace_terminal_filler(self._llm_answer(user_input)),
             "tool_calls": [],
             "status": "success",
             "trace_id": trace_id,
