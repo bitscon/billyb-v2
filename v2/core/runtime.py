@@ -2598,6 +2598,40 @@ _CRITIQUE_FOLLOW_UP_PROMPT = (
     "Do you want to revise the plan, explore an alternative, or accept risk and proceed?"
 )
 
+_SESSION_SUMMARY_OFFER_PROMPT = "Want me to summarize where we landed so we can pick this up later?"
+_SESSION_SUMMARY_OVERWRITE_PROMPT = (
+    "A session summary already exists. Want me to replace it with a new summary?"
+)
+_SESSION_SUMMARY_RESUME_PROMPT = "Do you want to proceed, revise the summary, or start fresh?"
+
+_SESSION_SUMMARY_PAUSE_PHRASES = (
+    "ok",
+    "okay",
+    "that works",
+    "let's stop here",
+    "lets stop here",
+    "i'll think about it",
+    "ill think about it",
+    "thanks",
+    "thank you",
+)
+
+_SESSION_SUMMARY_RESUME_PHRASES = (
+    "continue",
+    "pick this back up",
+    "pick this up",
+    "let's resume",
+    "lets resume",
+    "where were we",
+)
+
+_SESSION_SUMMARY_DISCARD_PHRASES = (
+    "discard the summary",
+    "discard summary",
+    "start fresh",
+    "forget where we left off",
+)
+
 _TERMINAL_FILLER_PHRASES = (
     "i can help with that",
     "i can assist",
@@ -4714,6 +4748,7 @@ class BillyRuntime:
         self._last_task_artifact_diff: Dict[str, Any] | None = None
         self._active_plan_artifact: Dict[str, Any] | None = None
         self._critique_pending: Dict[str, Any] | None = None
+        self._session_summary_offer_asked: bool = False
 
     def _extract_conversational_subject(self, utterance: str) -> str:
         normalized = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
@@ -4783,6 +4818,374 @@ class BillyRuntime:
         if self._session_goals or self._session_constraints or self._session_assumptions or self._session_decisions:
             return True
         return False
+
+    def _session_summary_pause_signal(self, utterance: str) -> str | None:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        lowered = lowered.rstrip(".!?").strip()
+        if not lowered:
+            return None
+        if lowered in _SESSION_SUMMARY_PAUSE_PHRASES:
+            return lowered
+        return None
+
+    def _session_summary_resume_signal(self, utterance: str) -> str | None:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        lowered = lowered.rstrip(".!?").strip()
+        if not lowered:
+            return None
+        if lowered in _SESSION_SUMMARY_RESUME_PHRASES:
+            return lowered
+        return None
+
+    def _is_session_summary_discard_request(self, utterance: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        lowered = lowered.rstrip(".!?").strip()
+        if not lowered:
+            return False
+        if lowered in _SESSION_SUMMARY_DISCARD_PHRASES:
+            return True
+        return any(phrase in lowered for phrase in _SESSION_SUMMARY_DISCARD_PHRASES)
+
+    def _active_plan_has_remaining_steps(self) -> bool:
+        active_plan = self._active_plan_artifact if isinstance(self._active_plan_artifact, dict) else {}
+        steps = active_plan.get("steps", [])
+        if not isinstance(steps, list):
+            return False
+        normalized_steps = [str(step).strip() for step in steps if str(step).strip()]
+        if not normalized_steps:
+            return False
+        next_step_index = active_plan.get("next_step_index", 0)
+        next_step_index = next_step_index if isinstance(next_step_index, int) and next_step_index >= 0 else 0
+        return next_step_index < len(normalized_steps)
+
+    def _has_session_summary_artifact(self) -> bool:
+        artifact = self._get_task_artifact("session_summary")
+        if not isinstance(artifact, dict):
+            return False
+        content = artifact.get("content", {})
+        return isinstance(content, dict) and bool(content)
+
+    def _session_summary_payload(self) -> Dict[str, Any] | None:
+        artifact = self._get_task_artifact("session_summary")
+        if not isinstance(artifact, dict):
+            return None
+        content = artifact.get("content", {})
+        if not isinstance(content, dict):
+            return None
+        return copy.deepcopy(content)
+
+    def _should_offer_session_summary(self, utterance: str) -> bool:
+        if self._session_summary_offer_asked:
+            return False
+        pause_signal = self._session_summary_pause_signal(utterance)
+        if pause_signal is None:
+            return False
+        if not self._has_critique_context():
+            return False
+        if pause_signal in {"ok", "okay", "that works"} and self._active_plan_has_remaining_steps():
+            return False
+        return True
+
+    def _build_session_summary_offer_response(self, *, trace_id: str) -> Dict[str, Any]:
+        overwrite_existing = self._has_session_summary_artifact()
+        question = _SESSION_SUMMARY_OVERWRITE_PROMPT if overwrite_existing else _SESSION_SUMMARY_OFFER_PROMPT
+        self._interactive_prompt_state = {
+            "type": "session_summary_offer",
+            "origin": "session_summary",
+            "prompt_id": f"interactive-{trace_id}",
+            "question": question,
+            "overwrite_existing": overwrite_existing,
+        }
+        self._session_summary_offer_asked = True
+        return {
+            "final_output": question,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "interactive_prompt",
+            "interactive_prompt_active": True,
+            "interactive_prompt_type": "session_summary_offer",
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
+
+    def _session_summary_confidence_level(self) -> str:
+        score = 0
+        if self._latest_active_goal() is not None:
+            score += 1
+        if self._latest_active_constraint() is not None:
+            score += 1
+        if self._session_decisions:
+            score += 1
+        if isinstance(self._active_plan_artifact, dict):
+            score += 1
+        active_assumptions = self._active_records(self._session_assumptions)
+        if active_assumptions and all(bool(item.get("confirmed", False)) for item in active_assumptions):
+            score += 1
+        if score >= 4:
+            return "high"
+        if score >= 2:
+            return "medium"
+        return "low"
+
+    def _derive_session_summary_payload(self) -> Dict[str, Any]:
+        latest_goal = self._latest_active_goal()
+        primary_goal = str((latest_goal or {}).get("summary", "")).strip()
+        if not primary_goal:
+            primary_goal = "No explicit primary goal was recorded."
+
+        current_direction = str(self._conversation_context.get("last_user_input", "")).strip()
+        if not current_direction:
+            current_direction = "Planning context exists, but the current direction is not explicit yet."
+
+        next_suggested_thinking_step = "Choose one direction and define the next checkpoint."
+        active_plan = self._active_plan_artifact if isinstance(self._active_plan_artifact, dict) else {}
+        plan_steps = active_plan.get("steps", [])
+        if isinstance(plan_steps, list):
+            normalized_steps = [str(step).strip() for step in plan_steps if str(step).strip()]
+            next_step_index = active_plan.get("next_step_index", 0)
+            next_step_index = next_step_index if isinstance(next_step_index, int) and next_step_index >= 0 else 0
+            artifact_id = str(active_plan.get("artifact_id", "")).strip()
+            if normalized_steps and next_step_index < len(normalized_steps):
+                active_step = normalized_steps[next_step_index]
+                if artifact_id:
+                    current_direction = (
+                        f"Working through `{artifact_id}`; focus is step {next_step_index + 1}: {active_step}"
+                    )
+                else:
+                    current_direction = f"Plan progression is active; current focus is step {next_step_index + 1}: {active_step}"
+                next_suggested_thinking_step = active_step
+            elif normalized_steps and artifact_id:
+                current_direction = f"Plan `{artifact_id}` is defined and all captured steps were advanced."
+
+        key_decisions = [
+            str(record.get("summary", "")).strip()
+            for record in self._session_decisions
+            if isinstance(record, dict) and str(record.get("summary", "")).strip()
+        ][-3:]
+
+        open_questions: List[str] = []
+        if self._latest_active_constraint() is None:
+            open_questions.append("Which constraints are non-negotiable before the next step?")
+        if not key_decisions:
+            open_questions.append("Which option are you ready to commit to next?")
+        active_assumptions = self._active_records(self._session_assumptions)
+        if any(not bool(item.get("confirmed", False)) for item in active_assumptions):
+            open_questions.append("Which load-bearing assumption should be confirmed first?")
+        if primary_goal.startswith("No explicit"):
+            open_questions.append("What single primary goal should guide the next planning pass?")
+        if not open_questions:
+            open_questions.append("What checkpoint will confirm that the next step is working?")
+        open_questions = open_questions[:3]
+
+        if next_suggested_thinking_step == "Choose one direction and define the next checkpoint." and open_questions:
+            next_suggested_thinking_step = f"Resolve this first: {open_questions[0]}"
+
+        return {
+            "primary_goal": primary_goal,
+            "current_direction": current_direction,
+            "key_decisions": key_decisions,
+            "open_questions": open_questions,
+            "next_suggested_thinking_step": next_suggested_thinking_step,
+            "confidence_level": self._session_summary_confidence_level(),
+        }
+
+    def _build_session_summary_capture_response(
+        self,
+        *,
+        trace_id: str,
+        overwrite_existing: bool,
+    ) -> Dict[str, Any]:
+        summary_payload = self._derive_session_summary_payload()
+        summary_artifact = self._upsert_task_artifact(
+            name="session_summary",
+            artifact_type="session_summary",
+            content=summary_payload,
+            summary="Planning session synthesis summary (session-scoped, advisory-only).",
+            source_mode="advisory",
+        )
+        message = "Session summary captured. This is advisory-only and session-scoped."
+        if overwrite_existing:
+            message = "Session summary replaced. This is advisory-only and session-scoped."
+        advisory_output: Dict[str, Any] = {
+            "mode": "advisory",
+            "execution_enabled": False,
+            "advisory_only": True,
+            "status": "advisory_ready",
+            "message": message,
+            "session_summary": summary_payload,
+            "task_artifact": self._artifact_public_view(summary_artifact),
+            "clarifying_question": "Do you want to pause here or continue with the next thinking step?",
+        }
+        advisory_output = self._prepare_advisory_output(advisory_output)
+        self._remember_conversational_context(
+            user_input="session summary capture",
+            intent_class="planning_request",
+            mode="advisory",
+        )
+        return {
+            "final_output": advisory_output,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "advisory",
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
+
+    def _build_session_summary_resume_response(self, *, trace_id: str) -> Dict[str, Any] | None:
+        summary_payload = self._session_summary_payload()
+        if summary_payload is None:
+            return None
+        next_step = str(summary_payload.get("next_suggested_thinking_step", "")).strip()
+        current_direction = str(summary_payload.get("current_direction", "")).strip()
+        message = "Resuming from your saved session summary."
+        if current_direction:
+            message = f"{message} Current direction: {current_direction}"
+        if next_step:
+            message = f"{message} Next thinking step: {next_step}"
+        advisory_output: Dict[str, Any] = {
+            "mode": "advisory",
+            "execution_enabled": False,
+            "advisory_only": True,
+            "status": "advisory_ready",
+            "message": message,
+            "session_summary": summary_payload,
+            "clarifying_question": _SESSION_SUMMARY_RESUME_PROMPT,
+            "resume_intelligence": {
+                "from_session_summary": True,
+                "advisory_only": True,
+            },
+        }
+        advisory_output = self._prepare_advisory_output(advisory_output)
+        self._interactive_prompt_state = {
+            "type": "session_summary_resume_action",
+            "origin": "session_summary",
+            "prompt_id": f"interactive-{trace_id}",
+            "question": _SESSION_SUMMARY_RESUME_PROMPT,
+        }
+        self._remember_conversational_context(
+            user_input="resume session summary",
+            intent_class="planning_request",
+            mode="advisory",
+        )
+        return {
+            "final_output": advisory_output,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "advisory",
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
+
+    def _resolve_session_summary_resume_action(self, reply: str) -> str | None:
+        lowered = re.sub(r"\s+", " ", str(reply or "").strip().lower())
+        lowered = lowered.rstrip(".!?").strip()
+        if not lowered:
+            return None
+        if "start fresh" in lowered or "forget where we left off" in lowered or "discard" in lowered:
+            return "start_fresh"
+        if "revise" in lowered or "update summary" in lowered or "change summary" in lowered:
+            return "revise"
+        if lowered in {"proceed", "continue", "go ahead", "yes", "ok", "okay"}:
+            return "proceed"
+        if "proceed" in lowered:
+            return "proceed"
+        return None
+
+    def _build_session_summary_resume_resolution(
+        self,
+        *,
+        action: str,
+        trace_id: str,
+    ) -> Dict[str, Any]:
+        if action == "start_fresh":
+            return self._build_session_summary_discard_response(trace_id=trace_id)
+
+        if action == "revise":
+            return {
+                "final_output": (
+                    "Summary kept as-is. Share what changed, and I can capture a replacement summary with confirmation."
+                ),
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "conversation_layer",
+                "execution_enabled": False,
+                "advisory_only": True,
+            }
+
+        summary_payload = self._session_summary_payload() or self._derive_session_summary_payload()
+        next_step = str(summary_payload.get("next_suggested_thinking_step", "")).strip()
+        seed_utterance = next_step or str(summary_payload.get("current_direction", "")).strip() or "continue planning"
+        advisory_output = build_advisory_plan(
+            utterance=seed_utterance,
+            intent_class="planning_request",
+        )
+        advisory_output["message"] = (
+            f"Proceeding from the saved summary. Next thinking step: {next_step or seed_utterance}"
+        )
+        advisory_output["session_summary"] = summary_payload
+        advisory_output["resume_intelligence"] = {
+            "from_session_summary": True,
+            "action": "proceed",
+            "advisory_only": True,
+        }
+        self._register_plan_artifact_from_advisory(
+            source_utterance=seed_utterance,
+            intent_class="planning_request",
+            advisory_output=advisory_output,
+        )
+        advisory_output = self._prepare_advisory_output(advisory_output)
+        self._activate_interactive_prompt_from_advisory(
+            advisory_output=advisory_output,
+            trace_id=trace_id,
+        )
+        self._remember_conversational_context(
+            user_input=seed_utterance,
+            intent_class="planning_request",
+            mode="advisory",
+        )
+        return {
+            "final_output": advisory_output,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "advisory",
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
+
+    def _build_session_summary_discard_response(self, *, trace_id: str) -> Dict[str, Any]:
+        removed = self._discard_task_artifact("session_summary")
+        self._task_artifact_history.pop("session_summary", None)
+        if (
+            isinstance(self._last_task_artifact_diff, dict)
+            and str(self._last_task_artifact_diff.get("artifact_name", "")).strip() == "session_summary"
+        ):
+            self._last_task_artifact_diff = None
+        prompt_state = self._interactive_prompt_state if isinstance(self._interactive_prompt_state, dict) else {}
+        if str(prompt_state.get("origin", "")).strip() == "session_summary":
+            self._interactive_prompt_state = None
+        self._session_summary_offer_asked = False
+        message = "Discarded the session summary. Other session artifacts were left untouched."
+        if not removed:
+            message = "No session summary was recorded. Other session artifacts were left untouched."
+        self._remember_conversational_context(
+            user_input="discard the summary",
+            intent_class="informational_query",
+            mode="conversation",
+        )
+        return {
+            "final_output": message,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "conversation_layer",
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
 
     def _build_critique_offer_response(self, *, trace_id: str) -> Dict[str, Any]:
         self._interactive_prompt_state = {
@@ -8027,6 +8430,57 @@ class BillyRuntime:
                 trace_id=trace_id,
             )
 
+        if prompt_type == "session_summary_offer":
+            decision = self._resolve_yes_no_reply(reply)
+            if decision is None:
+                return {
+                    "final_output": "Please respond yes or no to create the session summary.",
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                    "mode": "interactive_prompt",
+                    "interactive_prompt_active": True,
+                    "interactive_prompt_type": "session_summary_offer",
+                    "execution_enabled": False,
+                    "advisory_only": True,
+                }
+            self._interactive_prompt_state = None
+            if decision == "yes":
+                return self._build_session_summary_capture_response(
+                    trace_id=trace_id,
+                    overwrite_existing=bool(state.get("overwrite_existing", False)),
+                )
+            return {
+                "final_output": "Understood. I will not create a session summary right now.",
+                "tool_calls": [],
+                "status": "success",
+                "trace_id": trace_id,
+                "mode": "interactive_response",
+                "interactive_prompt_active": False,
+                "execution_enabled": False,
+                "advisory_only": True,
+            }
+
+        if prompt_type == "session_summary_resume_action":
+            action = self._resolve_session_summary_resume_action(reply)
+            if action is None:
+                return {
+                    "final_output": "Reply with one of: proceed, revise summary, or start fresh.",
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                    "mode": "interactive_prompt",
+                    "interactive_prompt_active": True,
+                    "interactive_prompt_type": "session_summary_resume_action",
+                    "execution_enabled": False,
+                    "advisory_only": True,
+                }
+            self._interactive_prompt_state = None
+            return self._build_session_summary_resume_resolution(
+                action=action,
+                trace_id=trace_id,
+            )
+
         if prompt_type == "preference_capture":
             decision = self._resolve_yes_no_reply(reply)
             if decision is None:
@@ -11011,6 +11465,29 @@ class BillyRuntime:
             for option in mitigation_options:
                 lines.append(f"- {str(option)}")
 
+        session_summary = advisory_output.get("session_summary", {})
+        if isinstance(session_summary, dict) and session_summary:
+            lines.append("")
+            lines.append("Session Summary:")
+            lines.append(f"- Primary goal: {str(session_summary.get('primary_goal', '')).strip()}")
+            lines.append(f"- Current direction: {str(session_summary.get('current_direction', '')).strip()}")
+            key_decisions = session_summary.get("key_decisions", [])
+            if isinstance(key_decisions, list) and key_decisions:
+                lines.append("- Key decisions:")
+                for item in key_decisions:
+                    lines.append(f"  - {str(item).strip()}")
+            open_questions = session_summary.get("open_questions", [])
+            if isinstance(open_questions, list) and open_questions:
+                lines.append("- Open questions:")
+                for item in open_questions:
+                    lines.append(f"  - {str(item).strip()}")
+            next_step = str(session_summary.get("next_suggested_thinking_step", "")).strip()
+            if next_step:
+                lines.append(f"- Next suggested thinking step: {next_step}")
+            confidence_level = str(session_summary.get("confidence_level", "")).strip().lower()
+            if confidence_level in {"low", "medium", "high"}:
+                lines.append(f"- Confidence level: {confidence_level}")
+
         stress_test = advisory_output.get("stress_test", [])
         if isinstance(stress_test, list) and stress_test:
             lines.append("")
@@ -11570,8 +12047,16 @@ class BillyRuntime:
             )
 
         if not should_route_aci:
+            if self._is_session_summary_discard_request(normalized_input):
+                return self._build_session_summary_discard_response(trace_id=trace_id)
+            if self._session_summary_resume_signal(normalized_input) is not None:
+                resume_response = self._build_session_summary_resume_response(trace_id=trace_id)
+                if resume_response is not None:
+                    return resume_response
             if self._is_critique_invitation(normalized_input) and self._has_critique_context():
                 return self._build_critique_offer_response(trace_id=trace_id)
+            if self._should_offer_session_summary(normalized_input):
+                return self._build_session_summary_offer_response(trace_id=trace_id)
             goal_reset_mode = self._goal_reset_mode(normalized_input)
             if goal_reset_mode is not None:
                 return self._build_goal_reset_response(
