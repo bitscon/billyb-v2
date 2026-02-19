@@ -2565,6 +2565,39 @@ _PLANNING_DEPTH_TOKENS = {
     "stress-test": "critique",
 }
 
+_CRITIQUE_OFFER_PHRASES = (
+    "this looks good",
+    "thoughts?",
+    "thoughts",
+    "anything i'm missing",
+    "anything im missing",
+    "what am i missing",
+    "does this make sense",
+    "does that make sense",
+)
+
+_CRITIQUE_DEPTH_PROMPT = (
+    "I can critique this plan. Which depth do you want: quick check, full stress test, or assumption review?"
+)
+
+_CRITIQUE_DEPTH_TOKENS = {
+    "quick": "quick_check",
+    "quick check": "quick_check",
+    "1": "quick_check",
+    "full": "full_stress_test",
+    "full stress test": "full_stress_test",
+    "stress test": "full_stress_test",
+    "stress-test": "full_stress_test",
+    "2": "full_stress_test",
+    "assumption": "assumption_review",
+    "assumption review": "assumption_review",
+    "3": "assumption_review",
+}
+
+_CRITIQUE_FOLLOW_UP_PROMPT = (
+    "Do you want to revise the plan, explore an alternative, or accept risk and proceed?"
+)
+
 _TERMINAL_FILLER_PHRASES = (
     "i can help with that",
     "i can assist",
@@ -4680,6 +4713,7 @@ class BillyRuntime:
         self._task_artifact_history: Dict[str, List[Dict[str, Any]]] = {}
         self._last_task_artifact_diff: Dict[str, Any] | None = None
         self._active_plan_artifact: Dict[str, Any] | None = None
+        self._critique_pending: Dict[str, Any] | None = None
 
     def _extract_conversational_subject(self, utterance: str) -> str:
         normalized = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
@@ -4730,6 +4764,361 @@ class BillyRuntime:
         if not lowered:
             return None
         return _PLAN_ADVANCEMENT_ACK_MAP.get(lowered)
+
+    def _is_critique_invitation(self, utterance: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
+        if not lowered:
+            return False
+        if lowered in _CRITIQUE_OFFER_PHRASES:
+            return True
+        return any(phrase in lowered for phrase in _CRITIQUE_OFFER_PHRASES)
+
+    def _has_critique_context(self) -> bool:
+        if isinstance(self._active_plan_artifact, dict):
+            return True
+        last_mode = str(self._conversation_context.get("last_system_mode", "")).strip()
+        last_intent = str(self._conversation_context.get("last_user_intent", "")).strip()
+        if last_mode == "advisory" and last_intent in {"planning_request", "advisory_request"}:
+            return True
+        if self._session_goals or self._session_constraints or self._session_assumptions or self._session_decisions:
+            return True
+        return False
+
+    def _build_critique_offer_response(self, *, trace_id: str) -> Dict[str, Any]:
+        self._interactive_prompt_state = {
+            "type": "critique_depth",
+            "origin": "advisory",
+            "prompt_id": f"interactive-{trace_id}",
+            "question": _CRITIQUE_DEPTH_PROMPT,
+        }
+        return {
+            "final_output": _CRITIQUE_DEPTH_PROMPT,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "interactive_prompt",
+            "interactive_prompt_active": True,
+            "interactive_prompt_type": "critique_depth",
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
+
+    def _resolve_critique_depth_reply(self, reply: str) -> str | None:
+        lowered = re.sub(r"\s+", " ", str(reply or "").strip().lower())
+        lowered = lowered.rstrip(".!").strip()
+        if not lowered:
+            return None
+        for token, value in _CRITIQUE_DEPTH_TOKENS.items():
+            if lowered == token or token in lowered:
+                return value
+        return None
+
+    def _active_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        active: List[Dict[str, Any]] = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("status", "active")).strip().lower() != "active":
+                continue
+            active.append(record)
+        return active
+
+    def _assumption_fragility_records(self, *, plan_steps: List[str]) -> List[Dict[str, Any]]:
+        assumptions = self._active_records(self._session_assumptions)
+        fragility_records: List[Dict[str, Any]] = []
+
+        if not assumptions:
+            return [
+                {
+                    "assumption_id": "assumption_unrecorded",
+                    "summary": "No explicit assumptions are recorded for this plan.",
+                    "validation_state": "unvalidated",
+                    "fragility": "load_bearing",
+                    "reason": "Plan relies on implicit assumptions that have not been confirmed.",
+                    "suggested_actions": ["confirm", "revise", "hedge"],
+                }
+            ]
+
+        steps_text = " ".join(plan_steps).lower()
+        for record in assumptions:
+            assumption_id = str(record.get("id", "")).strip() or "assumption_unknown"
+            summary = str(record.get("summary", "")).strip()
+            confirmed = bool(record.get("confirmed", False))
+            validation_state = "validated" if confirmed else "unvalidated"
+            fragility = "moderate"
+            reason = "Assumption can affect plan reliability."
+
+            summary_lower = summary.lower()
+            if not confirmed:
+                fragility = "high"
+                reason = "Assumption is unvalidated and can fail under real conditions."
+
+            if any(token in summary_lower for token in ("always", "guaranteed", "never", "everyone", "no risk")):
+                fragility = "high"
+                reason = "Absolute language suggests brittle assumptions under uncertainty."
+
+            keywords = [token for token in re.findall(r"[a-z0-9_]+", summary_lower) if len(token) > 3]
+            if keywords and any(keyword in steps_text for keyword in keywords):
+                if fragility != "high":
+                    fragility = "load_bearing"
+                reason = "Assumption appears directly in plan steps and is load-bearing."
+
+            fragility_records.append(
+                {
+                    "assumption_id": assumption_id,
+                    "summary": summary,
+                    "validation_state": validation_state,
+                    "fragility": fragility,
+                    "reason": reason,
+                    "suggested_actions": ["confirm", "revise", "hedge"],
+                }
+            )
+
+        return fragility_records
+
+    def _gather_critique_context(self) -> Dict[str, Any]:
+        plan_steps: List[str] = []
+        source_utterance = str(self._conversation_context.get("last_user_input", "")).strip()
+        intent_class = "planning_request"
+
+        active_plan = self._active_plan_artifact if isinstance(self._active_plan_artifact, dict) else {}
+        if isinstance(active_plan.get("steps"), list):
+            plan_steps = [str(step).strip() for step in active_plan.get("steps", []) if str(step).strip()]
+        if str(active_plan.get("source_utterance", "")).strip():
+            source_utterance = str(active_plan.get("source_utterance", "")).strip()
+        if str(active_plan.get("intent_class", "")).strip():
+            intent_class = str(active_plan.get("intent_class", "")).strip()
+
+        goals = self._active_records(self._session_goals)
+        constraints = self._active_records(self._session_constraints)
+        assumptions = self._active_records(self._session_assumptions)
+        decisions = list(self._session_decisions)
+
+        return {
+            "plan_steps": plan_steps,
+            "source_utterance": source_utterance,
+            "intent_class": intent_class,
+            "goals": goals,
+            "constraints": constraints,
+            "assumptions": assumptions,
+            "decisions": decisions,
+        }
+
+    def _build_critique_sections(self, *, depth_mode: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        plan_steps = list(context.get("plan_steps", []))
+        goals = list(context.get("goals", []))
+        constraints = list(context.get("constraints", []))
+        decisions = list(context.get("decisions", []))
+
+        key_risks: List[str] = []
+        if not plan_steps:
+            key_risks.append("No explicit step sequence is captured, which increases coordination drift risk.")
+        if len(plan_steps) > 4:
+            key_risks.append("Long plan sequences can hide compounding risk between steps.")
+        if not constraints:
+            key_risks.append("No active constraint is recorded; scope and risk tolerance may drift.")
+        if not goals:
+            key_risks.append("No explicit active goal is recorded; success criteria may remain ambiguous.")
+        if not key_risks:
+            key_risks.append("Primary risk is assumption failure between checkpoints.")
+
+        fragility = self._assumption_fragility_records(plan_steps=plan_steps)
+        hidden_assumptions = [
+            f"{item['assumption_id']}: {item['summary']} ({item['validation_state']}, {item['fragility']})"
+            for item in fragility
+        ]
+
+        goal_constraint_tensions: List[str] = []
+        goal_summaries = [str(item.get("summary", "")).strip().lower() for item in goals]
+        constraint_summaries = [str(item.get("summary", "")).strip().lower() for item in constraints]
+        steps_text = " ".join(plan_steps).lower()
+        if goal_summaries and constraint_summaries:
+            goal_constraint_tensions.append(
+                "Goal and constraint set both exist; validate each step against both to avoid silent conflicts."
+            )
+        if any("speed" in goal for goal in goal_summaries) and any(
+            token in " ".join(constraint_summaries) for token in ("low risk", "safe", "no downtime")
+        ):
+            goal_constraint_tensions.append(
+                "Speed-oriented goals may tension with safety constraints; checkpoints must be explicit."
+            )
+        if any(token in steps_text for token in ("restart", "replace", "cutover")) and any(
+            token in " ".join(constraint_summaries) for token in ("no downtime", "availability")
+        ):
+            goal_constraint_tensions.append(
+                "Execution steps imply availability risk against no-downtime constraints."
+            )
+        if not goal_constraint_tensions:
+            goal_constraint_tensions.append("No high-confidence goal/constraint tension detected from current records.")
+
+        failure_modes: List[str] = []
+        if plan_steps:
+            failure_modes.append("A failed early step can invalidate downstream steps if checkpoints are skipped.")
+        if decisions:
+            failure_modes.append("Earlier decisions may be stale if assumptions have changed since they were recorded.")
+        if any(item.get("fragility") in {"high", "load_bearing"} for item in fragility):
+            failure_modes.append("Load-bearing assumptions can break the plan at critical transition steps.")
+        if not failure_modes:
+            failure_modes.append("Primary failure mode is unclear ownership of validation checkpoints.")
+
+        mitigation_options = [
+            "Define a pass/fail checkpoint after each plan step before proceeding.",
+            "Confirm or revise high-fragility assumptions before committing the next step.",
+            "Choose the lowest-risk alternative path for steps with high blast radius.",
+        ]
+
+        if depth_mode == "quick_check":
+            key_risks = key_risks[:2]
+            hidden_assumptions = hidden_assumptions[:2]
+            failure_modes = failure_modes[:2]
+            mitigation_options = mitigation_options[:2]
+        elif depth_mode == "assumption_review":
+            key_risks = [
+                "Assumption fragility is the dominant risk axis for this plan.",
+                "Unvalidated assumptions can invalidate downstream decisions quickly.",
+            ]
+            goal_constraint_tensions = goal_constraint_tensions[:1]
+            failure_modes = [
+                "Plan can fail if assumptions are accepted without confirmation or hedging."
+            ]
+            mitigation_options = [
+                "Confirm fragile assumptions with explicit evidence.",
+                "Revise assumptions that conflict with active constraints.",
+                "Hedge assumptions with rollback-safe checkpoints.",
+            ]
+
+        return {
+            "key_risks": key_risks,
+            "hidden_assumptions": hidden_assumptions,
+            "goal_constraint_tensions": goal_constraint_tensions,
+            "failure_modes": failure_modes,
+            "mitigation_options": mitigation_options,
+            "assumption_fragility": fragility,
+        }
+
+    def _build_critique_response(self, *, depth_mode: str, trace_id: str) -> Dict[str, Any]:
+        context = self._gather_critique_context()
+        source_utterance = str(context.get("source_utterance", "")).strip() or "plan critique"
+        intent_class = str(context.get("intent_class", "")).strip() or "planning_request"
+
+        advisory_output = build_advisory_plan(
+            utterance=source_utterance,
+            intent_class=intent_class,
+        )
+        sections = self._build_critique_sections(depth_mode=depth_mode, context=context)
+        advisory_output.update(sections)
+        advisory_output["critique"] = {
+            "depth_mode": depth_mode,
+            "offered": True,
+            "accepted": True,
+            "advisory_only": True,
+        }
+        advisory_output["message"] = (
+            "Constructive critique prepared. This is advisory analysis only; no plan or assumptions were modified."
+        )
+        advisory_output["clarifying_question"] = _CRITIQUE_FOLLOW_UP_PROMPT
+
+        self._critique_pending = {
+            "depth_mode": depth_mode,
+            "source_utterance": source_utterance,
+            "intent_class": intent_class,
+        }
+        advisory_output = self._prepare_advisory_output(advisory_output)
+        self._interactive_prompt_state = {
+            "type": "critique_follow_up",
+            "origin": "advisory",
+            "prompt_id": f"interactive-{trace_id}",
+            "question": _CRITIQUE_FOLLOW_UP_PROMPT,
+        }
+        self._remember_conversational_context(
+            user_input=source_utterance,
+            intent_class=intent_class,
+            mode="advisory",
+        )
+        return {
+            "final_output": advisory_output,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "advisory",
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
+
+    def _resolve_critique_follow_up_action(self, reply: str) -> str | None:
+        lowered = re.sub(r"\s+", " ", str(reply or "").strip().lower())
+        lowered = lowered.rstrip(".!").strip()
+        if not lowered:
+            return None
+        if "revise" in lowered or "update plan" in lowered or "change plan" in lowered:
+            return "revise_plan"
+        if "alternative" in lowered or "explore" in lowered or "another option" in lowered:
+            return "explore_alternative"
+        if "accept" in lowered or "proceed" in lowered or "accept risk" in lowered:
+            return "accept_risk"
+        return None
+
+    def _build_critique_follow_up_resolution(
+        self,
+        *,
+        action: str,
+        trace_id: str,
+    ) -> Dict[str, Any]:
+        pending = self._critique_pending if isinstance(self._critique_pending, dict) else {}
+        source_utterance = str(pending.get("source_utterance", "")).strip() or str(
+            self._conversation_context.get("last_user_input", "")
+        ).strip()
+        intent_class = str(pending.get("intent_class", "")).strip() or "planning_request"
+
+        advisory_output = build_advisory_plan(
+            utterance=source_utterance,
+            intent_class=intent_class,
+        )
+        if action == "revise_plan":
+            advisory_output["message"] = (
+                "Revision path selected. I can help revise the plan, but I have not changed it automatically."
+            )
+            advisory_output["revision_focus"] = [
+                "Harden the highest-risk step with an explicit checkpoint.",
+                "Convert one load-bearing assumption into a validated condition.",
+                "Minimize blast radius before higher-impact transitions.",
+            ]
+        elif action == "explore_alternative":
+            advisory_output["message"] = (
+                "Alternative path selected. Here are options to compare before changing the current plan."
+            )
+            advisory_output["alternative_options"] = [
+                "Lower-risk path with more checkpoints.",
+                "Balanced path with moderate speed and risk.",
+                "Faster path with explicit rollback boundaries.",
+            ]
+        else:
+            advisory_output["message"] = (
+                "Risk acceptance recorded. I did not advance the plan automatically. "
+                "Say `continue` when you explicitly want the next step."
+            )
+
+        advisory_output["critique_follow_up"] = {
+            "action": action,
+            "plan_modified": False,
+            "assumptions_modified": False,
+        }
+        self._critique_pending = None
+        advisory_output = self._prepare_advisory_output(advisory_output)
+        self._remember_conversational_context(
+            user_input=source_utterance,
+            intent_class=intent_class,
+            mode="advisory",
+        )
+        return {
+            "final_output": advisory_output,
+            "tool_calls": [],
+            "status": "success",
+            "trace_id": trace_id,
+            "mode": "advisory",
+            "execution_enabled": False,
+            "advisory_only": True,
+        }
 
     def _explicit_planning_depth_mode(self, utterance: str) -> str | None:
         lowered = re.sub(r"\s+", " ", str(utterance or "").strip().lower())
@@ -5038,6 +5427,8 @@ class BillyRuntime:
     def _advance_active_plan_artifact(self, *, signal: str, trace_id: str) -> Dict[str, Any] | None:
         state = self._active_plan_artifact
         if not isinstance(state, dict):
+            return None
+        if isinstance(self._critique_pending, dict):
             return None
         if str(self._conversation_context.get("last_system_mode", "")).strip() != "advisory":
             return None
@@ -7589,6 +7980,50 @@ class BillyRuntime:
                 seed_utterance=seed_utterance,
                 intent_class=advisory_intent,
                 depth_mode=selected_depth,
+                trace_id=trace_id,
+            )
+
+        if prompt_type == "critique_depth":
+            depth_mode = self._resolve_critique_depth_reply(reply)
+            if depth_mode is None:
+                return {
+                    "final_output": (
+                        "Reply with one of: quick check, full stress test, or assumption review."
+                    ),
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                    "mode": "interactive_prompt",
+                    "interactive_prompt_active": True,
+                    "interactive_prompt_type": "critique_depth",
+                    "execution_enabled": False,
+                    "advisory_only": True,
+                }
+            self._interactive_prompt_state = None
+            return self._build_critique_response(
+                depth_mode=depth_mode,
+                trace_id=trace_id,
+            )
+
+        if prompt_type == "critique_follow_up":
+            action = self._resolve_critique_follow_up_action(reply)
+            if action is None:
+                return {
+                    "final_output": (
+                        "Reply with one of: revise plan, explore alternative, or accept risk and proceed."
+                    ),
+                    "tool_calls": [],
+                    "status": "success",
+                    "trace_id": trace_id,
+                    "mode": "interactive_prompt",
+                    "interactive_prompt_active": True,
+                    "interactive_prompt_type": "critique_follow_up",
+                    "execution_enabled": False,
+                    "advisory_only": True,
+                }
+            self._interactive_prompt_state = None
+            return self._build_critique_follow_up_resolution(
+                action=action,
                 trace_id=trace_id,
             )
 
@@ -10541,6 +10976,41 @@ class BillyRuntime:
             for assumption in assumptions:
                 lines.append(f"- {str(assumption)}")
 
+        key_risks = advisory_output.get("key_risks", [])
+        if isinstance(key_risks, list) and key_risks:
+            lines.append("")
+            lines.append("Key Risks:")
+            for risk in key_risks:
+                lines.append(f"- {str(risk)}")
+
+        hidden_assumptions = advisory_output.get("hidden_assumptions", [])
+        if isinstance(hidden_assumptions, list) and hidden_assumptions:
+            lines.append("")
+            lines.append("Hidden Assumptions:")
+            for item in hidden_assumptions:
+                lines.append(f"- {str(item)}")
+
+        tensions = advisory_output.get("goal_constraint_tensions", [])
+        if isinstance(tensions, list) and tensions:
+            lines.append("")
+            lines.append("Goal or Constraint Tensions:")
+            for tension in tensions:
+                lines.append(f"- {str(tension)}")
+
+        failure_modes = advisory_output.get("failure_modes", [])
+        if isinstance(failure_modes, list) and failure_modes:
+            lines.append("")
+            lines.append("Failure Modes:")
+            for mode in failure_modes:
+                lines.append(f"- {str(mode)}")
+
+        mitigation_options = advisory_output.get("mitigation_options", [])
+        if isinstance(mitigation_options, list) and mitigation_options:
+            lines.append("")
+            lines.append("Mitigation Options:")
+            for option in mitigation_options:
+                lines.append(f"- {str(option)}")
+
         stress_test = advisory_output.get("stress_test", [])
         if isinstance(stress_test, list) and stress_test:
             lines.append("")
@@ -11100,6 +11570,8 @@ class BillyRuntime:
             )
 
         if not should_route_aci:
+            if self._is_critique_invitation(normalized_input) and self._has_critique_context():
+                return self._build_critique_offer_response(trace_id=trace_id)
             goal_reset_mode = self._goal_reset_mode(normalized_input)
             if goal_reset_mode is not None:
                 return self._build_goal_reset_response(
