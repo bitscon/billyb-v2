@@ -1,0 +1,204 @@
+contract: post_classification_routing_contract.v1
+phase: 34
+type: object
+additionalProperties: false
+required:
+  - phase
+  - routing_record_id
+  - utterance_fingerprint
+  - classification_record_ref
+  - classification_first_enforcement_ref
+  - intent_class
+  - permitted_routing_categories
+  - selected_routing_category
+  - routing_state
+  - deterministic_reason_code
+  - compatibility_matrix_version
+  - execution_enabled
+  - authority_guarantees
+  - immutable
+  - issued_at
+properties:
+  phase:
+    const: 34
+    description: Fixed phase identifier for post-classification routing records.
+  routing_record_id:
+    type: string
+    minLength: 1
+    description: Stable identifier for one routing contract record.
+  utterance_fingerprint:
+    type: string
+    pattern: "^[a-f0-9]{64}$"
+    description: Fingerprint of normalized utterance associated with routing.
+  classification_record_ref:
+    type: object
+    additionalProperties: false
+    required:
+      - contract
+      - record_id
+      - phase
+    properties:
+      contract:
+        const: intent_classification_record.v1
+      record_id:
+        type: string
+        minLength: 1
+      phase:
+        const: 32
+    description: Required Phase 32 classification record reference.
+  classification_first_enforcement_ref:
+    type: object
+    additionalProperties: false
+    required:
+      - contract
+      - record_id
+      - phase
+      - enforcement_state
+    properties:
+      contract:
+        const: classification_first_enforcement.v1
+      record_id:
+        type: string
+        minLength: 1
+      phase:
+        const: 33
+      enforcement_state:
+        type: string
+        enum:
+          - passed
+          - failed
+    description: Required Phase 33 ordering-enforcement reference.
+  intent_class:
+    type: string
+    enum:
+      - information_request
+      - content_generation_request
+      - advice_request
+      - planning_request
+      - action_request
+      - explicit_action_request
+      - policy_challenge
+      - governance_inquiry
+      - unknown_intent
+    description: Classified intent from Phase 32 taxonomy.
+  permitted_routing_categories:
+    type: array
+    uniqueItems: true
+    minItems: 1
+    items:
+      type: string
+      enum:
+        - conversational_response
+        - clarification_response
+        - planning_candidate
+        - governance_review
+        - refusal_required
+    description: Routing categories admissible for the classified intent.
+  selected_routing_category:
+    type: string
+    enum:
+      - conversational_response
+      - clarification_response
+      - planning_candidate
+      - governance_review
+      - refusal_required
+    description: Selected routing category, must be in permitted set.
+  routing_state:
+    type: string
+    enum:
+      - admissible
+      - rejected
+    description: Routing decision state.
+  deterministic_reason_code:
+    type: string
+    enum:
+      - ROUTING_ADMISSIBLE
+      - ROUTING_PRECONDITION_MISSING_CLASSIFICATION
+      - ROUTING_PRECONDITION_INVALID_CLASSIFICATION
+      - ROUTING_CLASS_NOT_IN_CLOSED_SET
+      - ROUTING_CATEGORY_NOT_ALLOWED_FOR_INTENT
+      - ROUTING_CATEGORY_UNKNOWN
+      - ROUTING_EXECUTION_SEMANTICS_FORBIDDEN
+      - ROUTING_TOOL_SELECTION_FORBIDDEN
+      - ROUTING_PERMISSIONING_SEMANTICS_FORBIDDEN
+      - ROUTING_RESPONSE_BLOCKED_FAIL_CLOSED
+    description: Deterministic routing reason code.
+  compatibility_matrix_version:
+    type: string
+    const: phase34.routing_matrix.v1
+    description: Version identifier for intent-to-routing compatibility matrix.
+  execution_enabled:
+    const: false
+    description: Must remain false for all Phase 34 routing contracts.
+  authority_guarantees:
+    type: object
+    additionalProperties: false
+    required:
+      - can_execute
+      - can_authorize
+      - can_arm
+      - can_attempt_execution
+      - can_mutate_runtime
+      - can_escalate_authority
+    properties:
+      can_execute:
+        const: false
+      can_authorize:
+        const: false
+      can_arm:
+        const: false
+      can_attempt_execution:
+        const: false
+      can_mutate_runtime:
+        const: false
+      can_escalate_authority:
+        const: false
+  immutable:
+    const: true
+    description: Routing contracts are append-only and immutable.
+  issued_at:
+    type: string
+    format: date-time
+    description: Record issuance timestamp.
+
+forbidden_fields:
+  - tool_name
+  - tool_args
+  - execution_target
+  - authorization_state
+  - permission_state
+  - autonomy_mode
+  - executor_selector
+
+normative_constraints:
+  - "Routing SHALL consume valid classification reference before category selection."
+  - "Routing SHALL consume Phase 33 classification-first enforcement status."
+  - "Selected routing category MUST be within permitted_routing_categories."
+  - "Routing contracts MUST NOT encode execution, tooling, permissioning, or authority semantics."
+  - "Routing categories are descriptive only and non-executable."
+
+deterministic_validation_order:
+  - "Validate schema shape and required fields."
+  - "Validate classification_record_ref linkage to intent_classification_record.v1 phase 32."
+  - "Validate classification_first_enforcement_ref linkage to classification_first_enforcement.v1 phase 33."
+  - "Validate enforcement_state is passed for admissible routing."
+  - "Validate intent_class membership in closed enum."
+  - "Validate permitted_routing_categories and selected_routing_category enums."
+  - "Validate selected_routing_category belongs to permitted_routing_categories."
+  - "Reject forbidden execution/tool/permissioning fields."
+  - "Validate authority_guarantees constants are all false."
+  - "Validate execution_enabled is false."
+  - "Validate immutable is true."
+
+deterministic_rejection_code_priority_order:
+  - ROUTING_SCHEMA_INVALID
+  - ROUTING_PRECONDITION_MISSING_CLASSIFICATION
+  - ROUTING_PRECONDITION_INVALID_CLASSIFICATION
+  - ROUTING_CLASS_NOT_IN_CLOSED_SET
+  - ROUTING_CATEGORY_NOT_ALLOWED_FOR_INTENT
+  - ROUTING_CATEGORY_UNKNOWN
+  - ROUTING_EXECUTION_SEMANTICS_FORBIDDEN
+  - ROUTING_TOOL_SELECTION_FORBIDDEN
+  - ROUTING_PERMISSIONING_SEMANTICS_FORBIDDEN
+  - AUTHORITY_FALSE_GUARANTEE_VIOLATION
+  - EXECUTION_ENABLED_VIOLATION
