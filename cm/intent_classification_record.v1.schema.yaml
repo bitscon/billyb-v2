@@ -1,0 +1,131 @@
+contract: intent_classification_record.v1
+phase: 32
+type: object
+additionalProperties: false
+required:
+  - phase
+  - record_id
+  - classifier_version
+  - utterance_fingerprint
+  - intent_class
+  - classification_state
+  - classification_reason_code
+  - ambiguity_state
+  - execution_enabled
+  - authority_guarantees
+  - immutable
+  - issued_at
+properties:
+  phase:
+    const: 32
+    description: Fixed phase identifier for this classification contract.
+  record_id:
+    type: string
+    minLength: 1
+    description: Stable identifier for one classification record.
+  classifier_version:
+    type: string
+    minLength: 1
+    description: Version identifier for the deterministic classifier definition.
+  utterance_fingerprint:
+    type: string
+    pattern: "^[a-f0-9]{64}$"
+    description: Hash fingerprint of normalized utterance input.
+  intent_class:
+    type: string
+    enum:
+      - information_request
+      - content_generation_request
+      - advice_request
+      - planning_request
+      - action_request
+      - explicit_action_request
+      - policy_challenge
+      - governance_inquiry
+      - unknown_intent
+    description: Exactly one class from the closed taxonomy.
+  classification_state:
+    type: string
+    enum:
+      - classified
+      - classified_fail_closed
+    description: Neutral classification outcome indicator only.
+  classification_reason_code:
+    type: string
+    minLength: 1
+    description: Deterministic reason code explaining classification outcome.
+  ambiguity_state:
+    type: string
+    enum:
+      - none
+      - no_match
+      - conflicting_signals
+      - unresolved
+    description: Ambiguity marker used only for classification diagnostics.
+  execution_enabled:
+    const: false
+    description: Must remain false for all Phase 32 records.
+  authority_guarantees:
+    type: object
+    additionalProperties: false
+    required:
+      - can_execute
+      - can_authorize
+      - can_arm
+      - can_attempt_execution
+      - can_mutate_runtime
+      - can_escalate_authority
+    properties:
+      can_execute:
+        const: false
+      can_authorize:
+        const: false
+      can_arm:
+        const: false
+      can_attempt_execution:
+        const: false
+      can_mutate_runtime:
+        const: false
+      can_escalate_authority:
+        const: false
+  immutable:
+    const: true
+    description: Classification record is write-once and immutable.
+  issued_at:
+    type: string
+    format: date-time
+    description: Record issuance time.
+
+forbidden_fields:
+  - route_disposition
+  - escalation_eligibility
+  - routing_decision
+  - authorization_state
+  - admissibility_state
+
+normative_constraints:
+  - "Phase 32 records SHALL remain classification-only."
+  - "Phase 32 records MUST NOT encode routing, execution, permissioning, or authorization decisions."
+  - "Exactly one intent_class value SHALL be present."
+  - "unknown_intent SHALL be used for no-match, conflict, or unresolved ambiguity."
+
+deterministic_validation_order:
+  - "Validate schema shape and required fields."
+  - "Reject any forbidden fields."
+  - "Validate intent_class membership in the closed enum."
+  - "Validate single-class semantics (exactly one intent_class)."
+  - "Validate classification_state and ambiguity_state coherence."
+  - "Validate authority_guarantees constants are all false."
+  - "Validate execution_enabled is false."
+  - "Validate immutable is true."
+
+deterministic_rejection_code_priority_order:
+  - SCHEMA_INVALID
+  - CLASSIFICATION_REQUIRED
+  - INTENT_CLASS_NOT_IN_CLOSED_SET
+  - MULTI_CLASS_CONFLICT
+  - AMBIGUITY_UNRESOLVED
+  - ROUTING_METADATA_FORBIDDEN
+  - PERMISSIONING_METADATA_FORBIDDEN
+  - AUTHORITY_FALSE_GUARANTEE_VIOLATION
+  - EXECUTION_ENABLED_VIOLATION
