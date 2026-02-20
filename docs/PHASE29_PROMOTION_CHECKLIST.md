@@ -16,6 +16,120 @@ No runtime behavior, tools, policy authority, execution authority, or delegation
 - Previous frozen tag: `maturity-level-28`
 - Runtime delta: none
 
+
+## ACI Minimum Compliance Profile Normalization
+This addendum normalizes this phase document to the ACI minimum compliance profile without changing phase intent or runtime behavior.
+
+## Hard Invariants
+- [x] This phase remains specification-only and non-executing.
+- [x] All authority guarantees are fixed to `false`.
+- [x] `execution_enabled` remains `false`.
+- [x] Contract records are append-only and immutable after issuance.
+
+## Deterministic Validation Order
+- [x] Step 1: Validate normalized schema completeness.
+- [x] Step 2: Validate `authority_guarantees` are constant `false`.
+- [x] Step 3: Validate immutability guarantees (`append_only=true`, mutation flags `false`).
+- [x] Step 4: Validate explicit preservation clause coverage.
+- [x] Step 5: Validate time window (`issued_at < expires_at`); otherwise reject `TIME_WINDOW_INVALID`.
+- [x] Step 6: Apply deterministic rejection-code priority ordering.
+
+## Deterministic Rejection Codes (with priority ordering)
+- [x] `NOT_FOUND`
+- [x] `SCHEMA_INVALID`
+- [x] `AUTHORITY_FALSE_GUARANTEE_VIOLATION`
+- [x] `EXECUTION_ENABLED_VIOLATION`
+- [x] `IMMUTABILITY_GUARANTEE_VIOLATION`
+- [x] `TIME_WINDOW_INVALID`
+- [x] `PRESERVATION_CLAUSE_MISSING`
+
+## Explicit Preservation of Prior Phases
+- [x] Phases 27-28 are explicitly preserved with no authority escalation.
+
+## Worked Valid and Invalid Examples
+- [x] Valid: normalized artifact contains explicit all-false authority guarantees, `execution_enabled=false`, immutable append-only settings, and valid time window.
+- [x] Invalid: artifact omits `authority_guarantees` or sets any authority flag to non-false value; reject deterministically.
+
+## Normalized Contract v1
+```yaml
+contract: inspection_result_binding.v1
+type: object
+additionalProperties: false
+required:
+  - phase
+  - record_id
+  - issued_at
+  - expires_at
+  - execution_enabled
+  - authority_guarantees
+  - immutability_guarantees
+  - rejection_priority_order_schema
+properties:
+  phase:
+    const: 29
+  record_id:
+    type: string
+    minLength: 1
+  issued_at:
+    type: string
+    format: date-time
+  expires_at:
+    type: string
+    format: date-time
+  execution_enabled:
+    const: false
+  authority_guarantees:
+    type: object
+    additionalProperties: false
+    properties:
+      can_execute:
+        const: false
+      can_authorize:
+        const: false
+      can_arm:
+        const: false
+      can_attempt_execution:
+        const: false
+      can_mutate_runtime:
+        const: false
+      can_escalate_authority:
+        const: false
+  immutability_guarantees:
+    type: object
+    additionalProperties: false
+    properties:
+      append_only:
+        const: true
+      mutable_after_write:
+        const: false
+      overwrite_allowed:
+        const: false
+      delete_allowed:
+        const: false
+  rejection_priority_order_schema:
+    type: array
+    minItems: 1
+    items:
+      type: string
+      minLength: 1
+validation_rules:
+  - issued_at < expires_at
+rejection_code_priority_order:
+  - NOT_FOUND
+  - SCHEMA_INVALID
+  - AUTHORITY_FALSE_GUARANTEE_VIOLATION
+  - EXECUTION_ENABLED_VIOLATION
+  - IMMUTABILITY_GUARANTEE_VIOLATION
+  - TIME_WINDOW_INVALID
+  - PRESERVATION_CLAUSE_MISSING
+```
+
+## Deterministic Negative Guarantees
+- [x] No execution is performed in this phase.
+- [x] No arming, scheduling, callbacks, retries, or autonomous branching are enabled.
+- [x] No implicit authority is created from context, status, or prior artifacts.
+- [x] No runtime behavior change is introduced by this document.
+
 ## A. Hard Inspection Dispatch Invariants
 - [x] Inspection outputs are inert data unless explicitly bound through a structured inspection-result binding.
   Evidence target: `docs/PHASE29_PROMOTION_CHECKLIST.md` (Inspection Result Binding Contract v1)

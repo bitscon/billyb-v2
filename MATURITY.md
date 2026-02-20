@@ -1,16 +1,16 @@
 Billy Maturity Snapshot (Authoritative)
 Release
 
-Tag: maturity-level-29
+Tag: maturity-level-31
 
-Status: Level 29 — Inspection Dispatch Boundary (frozen)
+Status: Level 31 — Orchestrator Synthesis Loop (frozen)
 
 Current Maturity
 
-Billy is operating at Level 29 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, governed delegation/sub-agent orchestration contracts, project-scoped repeatable workflow orchestration, a conversational front-end secretary gate that separates chat from governed escalation, explicit contract-bound read-only inspection capabilities for file and directory observation, and a formal inspection dispatch boundary that requires explicit structured binding before inspection data can be consumed by downstream reasoning.
+Billy is operating at Level 31 with governed conversational routing, approval-gated execution, bounded opt-in autonomy, observability, advisory memory, explicit content capture, governed filesystem collaboration, review-only content generation, composite note persistence, session-scoped working set context resolution, structured revision/transformation intents, project-scoped multi-artifact coordination, goal-directed task semantics, project milestone/finalization/archive lifecycle controls, governed delegation/sub-agent orchestration contracts, project-scoped repeatable workflow orchestration, a conversational front-end secretary gate that separates chat from governed escalation, explicit contract-bound read-only inspection capabilities for file and directory observation, a formal inspection dispatch boundary that requires explicit structured binding before inspection data can be consumed by downstream reasoning, a specification-bound delegation envelope that restricts delegates to advisory-only inert outputs with zero execution/tool/mutation authority, and a specification-only orchestrator synthesis loop that assembles inert artifacts into review outputs without execution, mutation, tool invocation, persistence, delegation, or authority escalation.
 
 Current Working Edge:
-Level 29 is the current frozen baseline. Levels 1-29 remain frozen.
+Level 31 is the current frozen baseline. Levels 1-31 remain frozen.
 
 Phase Summary (1–9)
 
@@ -353,6 +353,44 @@ Cross-turn reuse guarded by explicit rebinding with scope/lifetime/owner validat
 
 Status:
 Frozen specification infrastructure. Phase 29 introduces no runtime behavior changes and preserves Phase 27 conversational non-authority and Phase 28 read-only/non-escalating inspection guarantees.
+
+Maturity Level 30 — Delegation Envelope (Frozen)
+
+Capabilities:
+
+Formal delegation envelope contract for bounded specialist-task requests (`delegation_request_id`, delegate profile, task scope, bounded inputs, authority scope, output expectations)
+
+Delegation remains advisory-only: delegates produce proposals/plans/drafts/analyses and cannot apply changes
+
+Hard zero-authority envelope invariants for delegates (`can_execute=false`, `can_mutate_state=false`, `can_call_tools=false`, `can_chain_tools=false`, `can_escalate_authority=false`, `can_persist_memory=false`, `can_delegate_further=false`)
+
+Deterministic rejection model for envelope violations, unknown delegate profiles, invalid input bindings, executable/tool-call output attempts, and nested delegation
+
+Delegate outputs are inert and return only to Billy orchestration; follow-on action still requires explicit governed approval/routing
+
+Status:
+Frozen specification infrastructure. Phase 30 introduces no runtime behavior changes and preserves Phase 27 conversational non-authority, Phase 28 read-only inspection, and Phase 29 explicit inspection dispatch-boundary guarantees.
+
+Maturity Level 31 — Orchestrator Synthesis Loop (Frozen)
+
+Capabilities:
+
+Specification-only synthesis contract for assembling/comparing/ranking inert delegate artifacts and explicit structured inputs into review outputs (`proposal`, `plan`, `draft`, `analysis`)
+
+Synthesis output contract with deterministic validation and deterministic rejection codes for missing inputs, ambiguous synthesis intent, and output-constraint violations
+
+Hard Invariants:
+
+Synthesis is inert-only and non-executable: no execution, no mutation, no tool invocation, no delegation, no background processing, and no authority escalation
+
+No automatic approval/application/persistence: synthesized output remains advisory until explicit governed intent and approval
+
+What It Does Not Enable:
+
+No autonomous orchestration loops, no runtime state mutation from synthesis output, no implicit delegation/tool chaining, and no silent persistence
+
+Status:
+Frozen specification infrastructure. Phase 31 introduces no runtime behavior changes and preserves Phase 27 conversational non-authority, Phase 28 read-only inspection guarantees, Phase 29 explicit inspection-binding guarantees, and Phase 30 delegation envelope non-authority guarantees.
 
 Freeze Policy
 

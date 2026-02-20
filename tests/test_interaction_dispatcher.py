@@ -52,8 +52,8 @@ def test_explicit_inspection_input_routes_to_deterministic_loop(monkeypatch):
 @pytest.mark.parametrize(
     "user_input, expected_mode",
     [
-        ("create a file", "governed_interpreter"),
-        ("service_foo_bar_12345", "governed_interpreter"),
+        ("create a file", "aci_intent_gatekeeper"),
+        ("service_foo_bar_12345", "conversation_layer"),
     ],
 )
 def test_invalid_ambiguous_input_routes_through_conversational_layer(
@@ -259,11 +259,12 @@ def test_generation_with_execution_terms_does_not_route_to_content_generation(mo
     )
 
     assert result["status"] == "success"
-    assert result["mode"] == "governed_interpreter"
-    assert "invalid/ambiguous" not in result["final_output"].lower()
+    assert result["mode"] == "aci_intent_gatekeeper"
+    assert isinstance(result["final_output"], dict)
+    assert result["final_output"]["type"] in {"proposal", "clarification", "refusal"}
 
 
-def test_action_request_escalates_to_governed_interpreter(monkeypatch):
+def test_action_request_escalates_to_aci_gatekeeper(monkeypatch):
     runtime = runtime_mod.BillyRuntime(config={})
 
     def _fail_llm(_prompt: str) -> str:
@@ -274,7 +275,176 @@ def test_action_request_escalates_to_governed_interpreter(monkeypatch):
     result = runtime.run_turn("create a file", {"trace_id": "trace-action-reject-stable"})
 
     assert result["status"] == "success"
-    assert result["mode"] == "governed_interpreter"
+    assert result["mode"] == "aci_intent_gatekeeper"
+
+
+def test_phase34_hello_routes_to_conversational_response(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    monkeypatch.setattr(runtime, "_llm_answer", lambda _prompt: "hello-response")
+
+    result = runtime.run_turn("hello", {"trace_id": "trace-phase34-hello"})
+
+    assert result["status"] == "success"
+    assert result.get("mode") != "aci_intent_gatekeeper"
+    assert result["final_output"] == "hello-response"
+
+
+def test_phase34_informational_query_routes_to_chat_without_aci(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    monkeypatch.setattr(runtime, "_llm_answer", lambda _prompt: "fact-response")
+
+    result = runtime.run_turn("tell me a fun fact about octopuses", {"trace_id": "trace-phase34-info"})
+
+    assert result["status"] == "success"
+    assert result["mode"] == "read_only_conversation"
+    assert result["final_output"] == "fact-response"
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "plan a safe rollout for nginx service updates",
+        "what should I check before restarting nginx?",
+    ],
+)
+def test_phase34_advisory_and_planning_requests_return_advisory_output(monkeypatch, user_input: str):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    def _fail_llm(_prompt: str) -> str:
+        raise AssertionError("Advisory/planning dispatch must not call direct chat generation.")
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fail_llm)
+
+    result = runtime.run_turn(user_input, {"trace_id": f"trace-phase34-advisory-{abs(hash(user_input))}"})
+
+    assert result["status"] == "success"
+    assert result["mode"] == "advisory"
+    assert result["execution_enabled"] is False
+    assert result["advisory_only"] is True
+    assert isinstance(result["final_output"], dict)
+    assert result["final_output"]["mode"] == "advisory"
+    assert result["final_output"]["execution_enabled"] is False
+    assert result["final_output"]["advisory_only"] is True
+
+
+def test_phase34_execution_attempt_still_refused_by_aci():
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    result = runtime.run_turn("run this now and execute immediately", {"trace_id": "trace-phase34-exec"})
+
+    assert result["mode"] == "aci_intent_gatekeeper"
+    assert result["status"] == "error"
+    assert isinstance(result["final_output"], dict)
+    assert result["final_output"]["type"] == "refusal"
+
+
+def test_phase34_governed_action_request_routes_to_aci_gatekeeper():
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    result = runtime.run_turn("create a file", {"trace_id": "trace-phase34-governed"})
+
+    assert result["mode"] == "aci_intent_gatekeeper"
+    assert result["status"] == "success"
+    assert isinstance(result["final_output"], dict)
+    assert result["final_output"]["type"] in {"proposal", "clarification"}
+
+
+def test_phase36_follow_up_how_resolves_against_previous_request(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    def _fail_llm(_prompt: str) -> str:
+        raise AssertionError("Website advisory and follow-up should not require direct LLM chat generation.")
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fail_llm)
+
+    first_request = "Can we build a website page called test.html with a heading and intro copy?"
+    first = runtime.run_turn(first_request, {"trace_id": "trace-phase36-followup-1"})
+    assert first["status"] == "success"
+    assert first["mode"] == "advisory"
+
+    follow_up = runtime.run_turn("how?", {"trace_id": "trace-phase36-followup-2"})
+    assert follow_up["status"] == "success"
+    assert follow_up["mode"] == "advisory"
+    assert follow_up["execution_enabled"] is False
+    assert follow_up["advisory_only"] is True
+    assert follow_up["final_output"]["follow_up"]["question"] == "how"
+    assert follow_up["final_output"]["follow_up"]["resolved_from"] == first_request
+    assert "NOT EXECUTED" in follow_up["final_output"]["message"]
+
+    repeated = runtime.run_turn("how?", {"trace_id": "trace-phase36-followup-3"})
+    assert repeated["final_output"] == follow_up["final_output"]
+
+
+def test_phase36_website_build_request_returns_advisory_plan_and_html(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    def _fail_llm(_prompt: str) -> str:
+        raise AssertionError("Website build advisory path should not call direct LLM chat generation.")
+
+    monkeypatch.setattr(runtime, "_llm_answer", _fail_llm)
+
+    result = runtime.run_turn(
+        "can we build a website page called landing.html for spring launch",
+        {"trace_id": "trace-phase36-website"},
+    )
+
+    assert result["status"] == "success"
+    assert result["mode"] == "advisory"
+    assert result["execution_enabled"] is False
+    assert result["advisory_only"] is True
+    assert result["final_output"]["mode"] == "advisory"
+    assert result["final_output"]["execution_enabled"] is False
+    assert result["final_output"]["advisory_only"] is True
+    assert "plan_steps" in result["final_output"]
+    assert result["final_output"]["plan_steps"]
+    assert "<!doctype html>" in result["final_output"]["example_html"].lower()
+    assert "<title>landing.html</title>" in result["final_output"]["example_html"].lower()
+    assert all(cmd.startswith("NOT EXECUTED:") for cmd in result["final_output"]["suggested_commands"])
+
+
+def test_phase36_terminal_filler_is_suppressed_on_repeated_turns(monkeypatch):
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    monkeypatch.setattr(runtime, "_llm_answer", lambda _prompt: "I can help with that.")
+
+    first = runtime.run_turn("tell me something useful", {"trace_id": "trace-phase36-filler-1"})
+    second = runtime.run_turn("tell me something useful", {"trace_id": "trace-phase36-filler-2"})
+
+    assert first["status"] == "success"
+    assert second["status"] == "success"
+    assert first["final_output"].strip().lower() != "i can help with that."
+    assert second["final_output"].strip().lower() != "i can help with that."
+    assert "what outcome do you want" in first["final_output"].lower()
+    assert "what outcome do you want" in second["final_output"].lower()
+
+
+def test_phase36_execution_attempt_still_refused_after_conversational_context():
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    runtime.run_turn(
+        "can we build a website page called test.html",
+        {"trace_id": "trace-phase36-exec-setup"},
+    )
+    execution_attempt = runtime.run_turn(
+        "run this now and execute immediately",
+        {"trace_id": "trace-phase36-exec"},
+    )
+
+    assert execution_attempt["mode"] == "aci_intent_gatekeeper"
+    assert execution_attempt["status"] == "error"
+    assert isinstance(execution_attempt["final_output"], dict)
+    assert execution_attempt["final_output"]["type"] == "refusal"
+
+
+def test_phase36_identity_response_remains_unchanged():
+    runtime = runtime_mod.BillyRuntime(config={})
+
+    result = runtime.run_turn("who are you?", {"trace_id": "trace-phase36-identity"})
+
+    assert result["status"] == "success"
+    assert result["final_output"] == "I am Billy, the Farm Hand and Foreman operating inside workshop.home."
 
 
 def test_content_capture_works_immediately_after_content_generation(monkeypatch):

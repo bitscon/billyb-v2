@@ -24,8 +24,8 @@ Before doing work, read these files in order:
 10. `v2/contracts/delegation_capabilities.yaml`
 11. `ONBOARDING_AGENTS.md`
 
-## 4. Current Operating Model (Level 29)
-- Level 29 is frozen baseline behavior; changes require explicit forward promotion.
+## 4. Current Operating Model (Level 31)
+- Level 31 is frozen baseline behavior; changes require explicit forward promotion.
 - A conversational front-end (secretary layer) runs before governed interpretation.
 - Casual conversation returns direct dialog and does not invoke execution governance.
 - Action-oriented and ambiguous action language escalates with a structured intent envelope.
@@ -37,6 +37,12 @@ Before doing work, read these files in order:
 - Phase 29 inspection dispatch boundary is frozen as specification-only: inspection outputs are inert unless explicitly bound to downstream reasoning.
 - Inspection-to-reasoning handoff requires structured binding (`inspection_result_id`, immutable payload reference, scope/lifetime/owner) and cannot occur through ambient context or implicit memory.
 - Inspection dispatch preserves Phase 27 conversational non-authority and Phase 28 read-only/non-escalation guarantees.
+- Phase 30 delegation envelope is frozen as specification-only: delegation is advisory-only and does not grant delegate authority.
+- Delegates have zero execution/tool/mutation authority and cannot escalate authority, persist memory, or recursively delegate.
+- Delegate outputs are inert and returned only to Billy orchestration; follow-on action still requires explicit governed routing and approval.
+- Phase 31 orchestrator synthesis loop is frozen as specification-only: Billy assembles inert structured inputs into review outputs (`proposal`, `plan`, `draft`, `analysis`).
+- Synthesis remains non-executing and non-mutating: no tool invocation, no delegation trigger, no background processing, no implicit persistence, and no authority escalation.
+- Synthesized output is inert and cannot be auto-applied; any follow-on action requires explicit governed routing and approval.
 - Talk to Billy in normal language.
 - Billy routes every message through governed interpretation and policy.
 - Action requests do not execute immediately; Billy requests explicit approval.

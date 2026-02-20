@@ -1,13 +1,13 @@
 # Billy Status Snapshot
 
 ## Current Maturity
-- Level: 29 (`Inspection Dispatch Boundary`)
-- Current frozen release tag: `maturity-level-29`
-- Phase 29 freeze state: frozen (specification-only)
+- Level: 31 (`Orchestrator Synthesis Loop`)
+- Current frozen release tag: `maturity-level-31`
+- Phase 31 freeze state: frozen (specification-only)
 - Conceptual ladder placement (`MATURITY_MODEL.md`): Level 4 (`Structured Workflow`)
 
 ## Frozen Phases
-- Phases 1-29 are frozen infrastructure.
+- Phases 1-31 are frozen infrastructure.
 - Any behavioral change requires explicit maturity promotion and acceptance.
 
 ## Current Governance Posture
@@ -20,9 +20,13 @@
 - Conversational front-end routing now separates chat (`escalate: false`) from governed escalation (`escalate: true`) before interpreter execution.
 - Explicit inspection capabilities are read-only, bounded, symlink-safe, and authority-sealed (`inspect_file`, `inspect_directory`).
 - Inspection dispatch boundary is explicit and binding-driven: inspection outputs are inert unless explicitly bound, with no ambient context carryover, silent persistence, or authority escalation.
+- Delegation envelope is explicit and advisory-only: delegates have zero execution/tool/mutation authority and delegate outputs are inert until governed approval/routing.
+- Orchestrator synthesis loop is explicit and specification-only: Billy assembles inert artifacts into review outputs with no execution, mutation, tooling, persistence, delegation trigger, or authority escalation.
 - Phase 27 promotion evidence is recorded in `PHASE27_PROMOTION_CHECKLIST.md`.
 - Phase 28 promotion evidence is recorded in `docs/PHASE28_PROMOTION_CHECKLIST.md`.
 - Phase 29 promotion evidence is recorded in `docs/PHASE29_PROMOTION_CHECKLIST.md`.
+- Phase 30 promotion evidence is recorded in `docs/PHASE30_PROMOTION_CHECKLIST.md`.
+- Phase 31 promotion evidence is recorded in `docs/PHASE31_PROMOTION_CHECKLIST.md`.
 
 ## Approval Contract
 Allowed approval phrases (case-insensitive exact match):

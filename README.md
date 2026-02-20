@@ -4,12 +4,14 @@ Billy is a protocol-driven assistant with explicit authority boundaries.
 All user input is processed through a governed conversational pipeline.
 
 ## Current Status
-- Maturity Level: 29 (`Inspection Dispatch Boundary`)
-- Infrastructure freeze: Phases 1-29 are frozen unless explicitly promoted
-- Frozen release tag: `maturity-level-29`
+- Maturity Level: 31 (`Orchestrator Synthesis Loop`)
+- Infrastructure freeze: Phases 1-31 are frozen unless explicitly promoted
+- Frozen release tag: `maturity-level-31`
 - Conversational behavior: natural language is first-class; a secretary-style front-end separates chat from governed execution escalation
 - Inspection behavior: explicit contract-bound read-only inspection is available for file/directory observation without expanding authority
 - Inspection dispatch behavior: inspection results are inert unless explicitly bound; no ambient context carryover into reasoning
+- Delegation behavior: delegates are advisory-only with zero execution/tool/mutation authority; outputs are inert until governed approval/routing
+- Synthesis behavior: Billy can assemble/compare/rank inert artifacts into review outputs without enabling execution, mutation, tooling, persistence, delegation, or authority escalation
 
 ## How to Use
 Use normal language. Billy routes requests through interpretation, policy, approval, and contract-bound execution.
@@ -38,6 +40,22 @@ Use normal language. Billy routes requests through interpretation, policy, appro
 - Inspection-to-reasoning handoff requires explicit structured binding; no implicit carryover into prompts, memory, or interpreter state.
 - Inspection outputs cannot auto-trigger summarization, planning, transformation, delegation, execution, or authority escalation.
 - Phase 27 and Phase 28 guarantees remain unchanged.
+
+## Delegation Envelope (Phase 30)
+- Phase 30 is specification-only and frozen by design.
+- Delegation is advisory-only: delegates may return proposals/plans/drafts/analyses only.
+- Delegates have zero execution/tool/mutation authority and cannot escalate authority, persist memory, or recursively delegate.
+- Delegate outputs are inert and returned only to Billy orchestration; they are never auto-applied or auto-executed.
+- Any follow-on action requires explicit governed routing and approval through existing authority paths.
+- Phase 27, Phase 28, and Phase 29 guarantees remain unchanged.
+
+## Orchestrator Synthesis Loop (Phase 31)
+- Phase 31 is specification-only and frozen by design.
+- Billy may synthesize inert structured inputs (user intent, explicit inspection bindings, delegate artifacts) into review outputs (`proposal`, `plan`, `draft`, `analysis`).
+- Synthesis is non-executable and non-mutating: no execution, no tool invocation, no delegation trigger, no persistence, and no authority escalation.
+- Synthesized output is inert and cannot be auto-applied or auto-routed.
+- Any follow-on action requires a new governed intent and explicit approval.
+- Phase 27, Phase 28, Phase 29, and Phase 30 guarantees remain unchanged.
 
 Examples:
 - `tell me a joke` -> chat response, no escalation
@@ -219,5 +237,7 @@ Implemented and frozen progression:
 - Phase 27: conversational front-end secretary gate with explicit escalation envelopes and governed interpreter handoff
 - Phase 28: explicit read-only inspection capabilities (`inspect_file`, `inspect_directory`) with authority-sealed observation boundaries
 - Phase 29: inspection dispatch boundary (specification-only) requiring explicit binding for inspection-to-reasoning consumption
+- Phase 30: delegation envelope (specification-only) with advisory-only delegate outputs and zero delegate authority
+- Phase 31: orchestrator synthesis loop (specification-only) assembling inert artifacts into review outputs with no execution authority
 
 See `MATURITY.md` for freeze policy, docs gate, and promotion state.

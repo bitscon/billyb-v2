@@ -14,3 +14,7 @@ v2/.venv/
 /docs/*
 !/docs/command-interpreter/
 !/docs/command-interpreter/**
+
+# ACI white paper drafts/finals
+/docs/ACI_WHITE_PAPER_DRAFT.md
+/docs/ACI_WHITE_PAPER_FINAL.md
