@@ -1,0 +1,287 @@
+contract: inert_plan_artifact.v1
+phase: 35
+type: object
+additionalProperties: false
+required:
+  - phase
+  - plan_artifact_id
+  - utterance_fingerprint
+  - classification_record_ref
+  - routing_contract_ref
+  - intent_class
+  - selected_routing_category
+  - plan_state
+  - plan_title
+  - plan_objective
+  - plan_steps
+  - assumptions
+  - dependencies
+  - constraints
+  - risk_notes
+  - deterministic_reason_code
+  - execution_enabled
+  - authority_guarantees
+  - immutable
+  - issued_at
+properties:
+  phase:
+    const: 35
+    description: Fixed phase identifier for inert plan artifacts.
+  plan_artifact_id:
+    type: string
+    minLength: 1
+    description: Stable identifier for one plan artifact.
+  utterance_fingerprint:
+    type: string
+    pattern: "^[a-f0-9]{64}$"
+    description: Fingerprint of normalized utterance context.
+  classification_record_ref:
+    type: object
+    additionalProperties: false
+    required:
+      - contract
+      - record_id
+      - phase
+    properties:
+      contract:
+        const: intent_classification_record.v1
+      record_id:
+        type: string
+        minLength: 1
+      phase:
+        const: 32
+    description: Required Phase 32 classification artifact reference.
+  routing_contract_ref:
+    type: object
+    additionalProperties: false
+    required:
+      - contract
+      - record_id
+      - phase
+      - selected_routing_category
+      - routing_state
+    properties:
+      contract:
+        const: post_classification_routing_contract.v1
+      record_id:
+        type: string
+        minLength: 1
+      phase:
+        const: 34
+      selected_routing_category:
+        type: string
+        enum:
+          - conversational_response
+          - clarification_response
+          - planning_candidate
+          - governance_review
+          - refusal_required
+      routing_state:
+        type: string
+        enum:
+          - admissible
+          - rejected
+    description: Required Phase 34 routing-contract reference.
+  intent_class:
+    type: string
+    enum:
+      - information_request
+      - content_generation_request
+      - advice_request
+      - planning_request
+      - action_request
+      - explicit_action_request
+      - policy_challenge
+      - governance_inquiry
+      - unknown_intent
+    description: Classified intent context for this plan.
+  selected_routing_category:
+    type: string
+    const: planning_candidate
+    description: Plan construction is only compatible with planning_candidate routing.
+  plan_state:
+    type: string
+    enum:
+      - constructed
+      - rejected
+    description: Plan-construction outcome state.
+  plan_title:
+    type: string
+    minLength: 1
+    description: Descriptive inert plan title.
+  plan_objective:
+    type: string
+    minLength: 1
+    description: Descriptive inert objective statement.
+  plan_steps:
+    type: array
+    minItems: 1
+    items:
+      type: object
+      additionalProperties: false
+      required:
+        - step_id
+        - description
+        - kind
+      properties:
+        step_id:
+          type: string
+          minLength: 1
+        description:
+          type: string
+          minLength: 1
+        kind:
+          type: string
+          enum:
+            - analysis_step
+            - decision_step
+            - sequencing_step
+    description: Ordered descriptive and non-executable plan steps.
+  assumptions:
+    type: array
+    items:
+      type: string
+  dependencies:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required:
+        - from_step_id
+        - to_step_id
+        - relation
+      properties:
+        from_step_id:
+          type: string
+          minLength: 1
+        to_step_id:
+          type: string
+          minLength: 1
+        relation:
+          type: string
+          enum:
+            - precedes
+            - informs
+  constraints:
+    type: array
+    items:
+      type: string
+  risk_notes:
+    type: array
+    items:
+      type: string
+  deterministic_reason_code:
+    type: string
+    enum:
+      - PLAN_CONSTRUCTION_ADMISSIBLE
+      - PLAN_PRECONDITION_MISSING_CLASSIFICATION_REFERENCE
+      - PLAN_PRECONDITION_INVALID_CLASSIFICATION_REFERENCE
+      - PLAN_PRECONDITION_MISSING_ROUTING_REFERENCE
+      - PLAN_PRECONDITION_INVALID_ROUTING_REFERENCE
+      - PLAN_ROUTING_CATEGORY_NOT_PLAN_COMPATIBLE
+      - PLAN_ROUTING_CONSTRAINT_BYPASS_FORBIDDEN
+      - PLAN_EXECUTABLE_CONTENT_FORBIDDEN
+      - PLAN_TOOL_REFERENCE_FORBIDDEN
+      - PLAN_SCHEDULING_CONTENT_FORBIDDEN
+      - PLAN_CREDENTIAL_CONTENT_FORBIDDEN
+      - PLAN_RESPONSE_BLOCKED_FAIL_CLOSED
+  execution_enabled:
+    const: false
+    description: Must remain false for all plan artifacts.
+  authority_guarantees:
+    type: object
+    additionalProperties: false
+    required:
+      - can_execute
+      - can_authorize
+      - can_arm
+      - can_attempt_execution
+      - can_mutate_runtime
+      - can_escalate_authority
+    properties:
+      can_execute:
+        const: false
+      can_authorize:
+        const: false
+      can_arm:
+        const: false
+      can_attempt_execution:
+        const: false
+      can_mutate_runtime:
+        const: false
+      can_escalate_authority:
+        const: false
+  immutable:
+    const: true
+    description: Plan artifact is append-only and immutable.
+  issued_at:
+    type: string
+    format: date-time
+    description: Plan artifact issuance timestamp.
+
+forbidden_fields:
+  - tool_name
+  - tool_args
+  - command
+  - command_block
+  - script
+  - api_call
+  - credential
+  - secret
+  - token
+  - schedule_at
+  - cron
+  - delay_seconds
+  - execution_context
+  - runtime_target
+  - permission_state
+  - authorization_state
+
+forbidden_step_content_patterns:
+  - "(?i)\\brun\\b"
+  - "(?i)\\bexecute\\b"
+  - "(?i)\\bapply\\b"
+  - "(?i)\\bcurl\\b"
+  - "(?i)\\bkubectl\\b"
+  - "(?i)\\bterraform\\b"
+  - "(?i)\\bssh\\b"
+  - "(?i)```(bash|sh|zsh|powershell|python)"
+  - "(?i)\\bapi key\\b"
+  - "(?i)\\bsecret\\b"
+  - "(?i)\\btoken\\b"
+  - "(?i)\\bcron\\b"
+  - "(?i)\\bschedule\\b"
+
+normative_constraints:
+  - "Plan artifacts SHALL be inert, descriptive, and non-authoritative."
+  - "Plan artifacts MUST reference valid Phase 32 classification and Phase 34 routing contracts."
+  - "selected_routing_category SHALL be planning_candidate."
+  - "Plan artifacts MUST NOT include commands, tool references, API invocations, credentials, or scheduling directives."
+  - "Plan artifacts MUST NOT encode execution, permissioning, or authorization semantics."
+
+deterministic_validation_order:
+  - "Validate schema shape and required fields."
+  - "Validate classification_record_ref linkage to intent_classification_record.v1 phase 32."
+  - "Validate routing_contract_ref linkage to post_classification_routing_contract.v1 phase 34."
+  - "Validate routing_contract_ref.selected_routing_category equals planning_candidate."
+  - "Validate selected_routing_category equals planning_candidate."
+  - "Validate step schema and non-empty descriptive content."
+  - "Reject forbidden fields and forbidden step content patterns."
+  - "Validate authority_guarantees constants are all false."
+  - "Validate execution_enabled is false."
+  - "Validate immutable is true."
+
+deterministic_rejection_code_priority_order:
+  - PLAN_SCHEMA_INVALID
+  - PLAN_PRECONDITION_MISSING_CLASSIFICATION_REFERENCE
+  - PLAN_PRECONDITION_INVALID_CLASSIFICATION_REFERENCE
+  - PLAN_PRECONDITION_MISSING_ROUTING_REFERENCE
+  - PLAN_PRECONDITION_INVALID_ROUTING_REFERENCE
+  - PLAN_ROUTING_CATEGORY_NOT_PLAN_COMPATIBLE
+  - PLAN_ROUTING_CONSTRAINT_BYPASS_FORBIDDEN
+  - PLAN_EXECUTABLE_CONTENT_FORBIDDEN
+  - PLAN_TOOL_REFERENCE_FORBIDDEN
+  - PLAN_SCHEDULING_CONTENT_FORBIDDEN
+  - PLAN_CREDENTIAL_CONTENT_FORBIDDEN
+  - AUTHORITY_FALSE_GUARANTEE_VIOLATION
+  - EXECUTION_ENABLED_VIOLATION
