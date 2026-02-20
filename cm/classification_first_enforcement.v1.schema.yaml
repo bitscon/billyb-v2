@@ -1,0 +1,161 @@
+contract: classification_first_enforcement.v1
+phase: 33
+type: object
+additionalProperties: false
+required:
+  - phase
+  - enforcement_record_id
+  - utterance_fingerprint
+  - classification_record_ref
+  - classification_record_presence
+  - classification_record_validation
+  - response_candidate_type
+  - response_release_state
+  - leak_guard_state
+  - deterministic_reason_code
+  - execution_enabled
+  - authority_guarantees
+  - immutable
+  - issued_at
+properties:
+  phase:
+    const: 33
+    description: Fixed phase identifier for classification-first enforcement records.
+  enforcement_record_id:
+    type: string
+    minLength: 1
+    description: Stable identifier for one enforcement decision record.
+  utterance_fingerprint:
+    type: string
+    pattern: "^[a-f0-9]{64}$"
+    description: Fingerprint of normalized utterance associated with this decision.
+  classification_record_ref:
+    type: object
+    additionalProperties: false
+    required:
+      - contract
+      - record_id
+      - phase
+    properties:
+      contract:
+        const: intent_classification_record.v1
+      record_id:
+        type: string
+        minLength: 1
+      phase:
+        const: 32
+    description: Reference to the required Phase 32 classification record.
+  classification_record_presence:
+    type: string
+    enum:
+      - present
+      - missing
+    description: Presence state for classification record precondition.
+  classification_record_validation:
+    type: string
+    enum:
+      - valid
+      - invalid
+      - not_evaluated
+    description: Validation state for referenced classification record.
+  response_candidate_type:
+    type: string
+    enum:
+      - chat
+      - clarification
+      - refusal
+      - governed_routing
+      - none
+    description: Candidate response type evaluated after classification gate.
+  response_release_state:
+    type: string
+    enum:
+      - released
+      - blocked
+    description: Whether response release was allowed after enforcement checks.
+  leak_guard_state:
+    type: string
+    enum:
+      - passed
+      - failed
+      - not_evaluated
+    description: User-output internal-metadata leakage check state.
+  deterministic_reason_code:
+    type: string
+    enum:
+      - ADMISSIBLE_CLASSIFICATION_FIRST_RELEASE
+      - CLASSIFICATION_RECORD_MISSING
+      - CLASSIFICATION_RECORD_INVALID
+      - PRE_CLASSIFICATION_RESPONSE_FORBIDDEN
+      - CLARIFICATION_PRECLASSIFICATION_FORBIDDEN
+      - INTERNAL_METADATA_EXPOSURE_FORBIDDEN
+      - RESPONSE_RELEASE_BLOCKED_FAIL_CLOSED
+    description: Deterministic reason for release or block outcome.
+  execution_enabled:
+    const: false
+    description: Must remain false for all Phase 33 records.
+  authority_guarantees:
+    type: object
+    additionalProperties: false
+    required:
+      - can_execute
+      - can_authorize
+      - can_arm
+      - can_attempt_execution
+      - can_mutate_runtime
+      - can_escalate_authority
+    properties:
+      can_execute:
+        const: false
+      can_authorize:
+        const: false
+      can_arm:
+        const: false
+      can_attempt_execution:
+        const: false
+      can_mutate_runtime:
+        const: false
+      can_escalate_authority:
+        const: false
+  immutable:
+    const: true
+    description: Enforcement record is append-only and immutable.
+  issued_at:
+    type: string
+    format: date-time
+    description: Record issuance timestamp.
+
+forbidden_user_output_tokens:
+  - "phase "
+  - ".v1"
+  - "protocol"
+  - "governance state"
+  - "deterministic_reason_code"
+  - "artifact"
+
+normative_constraints:
+  - "No user-visible response SHALL be emitted without valid classification precondition."
+  - "Clarification SHALL be post-classification only."
+  - "User-visible output MUST NOT leak internal phase/protocol/governance metadata."
+  - "Phase 33 MUST NOT add execution, authorization, or permissioning logic."
+
+deterministic_validation_order:
+  - "Validate schema shape and required fields."
+  - "Validate classification_record_ref contract and phase linkage."
+  - "Validate classification precondition states."
+  - "Validate response_candidate_type and response_release_state coherence."
+  - "Validate leak_guard_state coherence."
+  - "Validate deterministic_reason_code coherence."
+  - "Validate authority_guarantees constants are all false."
+  - "Validate execution_enabled is false."
+  - "Validate immutable is true."
+
+deterministic_rejection_code_priority_order:
+  - ENFORCEMENT_SCHEMA_INVALID
+  - CLASSIFICATION_RECORD_MISSING
+  - CLASSIFICATION_RECORD_INVALID
+  - PRE_CLASSIFICATION_RESPONSE_FORBIDDEN
+  - CLARIFICATION_PRECLASSIFICATION_FORBIDDEN
+  - INTERNAL_METADATA_EXPOSURE_FORBIDDEN
+  - AUTHORITY_FALSE_GUARANTEE_VIOLATION
+  - EXECUTION_ENABLED_VIOLATION
