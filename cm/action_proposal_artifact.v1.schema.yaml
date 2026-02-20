@@ -1,0 +1,300 @@
+contract: action_proposal_artifact.v1
+phase: 36
+type: object
+additionalProperties: false
+required:
+  - phase
+  - proposal_artifact_id
+  - utterance_fingerprint
+  - classification_record_ref
+  - routing_contract_ref
+  - plan_artifact_ref
+  - intent_class
+  - selected_routing_category
+  - proposal_state
+  - approval_state
+  - proposal_title
+  - proposal_intent_summary
+  - proposal_rationale
+  - expected_outcome
+  - assumptions
+  - constraints
+  - risk_notes
+  - review_questions
+  - deterministic_reason_code
+  - execution_enabled
+  - authority_guarantees
+  - immutable
+  - issued_at
+properties:
+  phase:
+    const: 36
+    description: Fixed phase identifier for action proposal artifacts.
+  proposal_artifact_id:
+    type: string
+    minLength: 1
+    description: Stable identifier for one proposal artifact.
+  utterance_fingerprint:
+    type: string
+    pattern: "^[a-f0-9]{64}$"
+    description: Fingerprint of normalized utterance context.
+  classification_record_ref:
+    type: object
+    additionalProperties: false
+    required:
+      - contract
+      - record_id
+      - phase
+    properties:
+      contract:
+        const: intent_classification_record.v1
+      record_id:
+        type: string
+        minLength: 1
+      phase:
+        const: 32
+    description: Required Phase 32 classification artifact reference.
+  routing_contract_ref:
+    type: object
+    additionalProperties: false
+    required:
+      - contract
+      - record_id
+      - phase
+      - selected_routing_category
+      - routing_state
+    properties:
+      contract:
+        const: post_classification_routing_contract.v1
+      record_id:
+        type: string
+        minLength: 1
+      phase:
+        const: 34
+      selected_routing_category:
+        type: string
+        enum:
+          - conversational_response
+          - clarification_response
+          - planning_candidate
+          - governance_review
+          - refusal_required
+      routing_state:
+        type: string
+        enum:
+          - admissible
+          - rejected
+    description: Required Phase 34 routing artifact reference.
+  plan_artifact_ref:
+    type: object
+    additionalProperties: false
+    required:
+      - contract
+      - record_id
+      - phase
+      - selected_routing_category
+      - plan_state
+    properties:
+      contract:
+        const: inert_plan_artifact.v1
+      record_id:
+        type: string
+        minLength: 1
+      phase:
+        const: 35
+      selected_routing_category:
+        type: string
+        const: planning_candidate
+      plan_state:
+        type: string
+        enum:
+          - constructed
+          - rejected
+    description: Required Phase 35 inert plan artifact reference.
+  intent_class:
+    type: string
+    enum:
+      - information_request
+      - content_generation_request
+      - advice_request
+      - planning_request
+      - action_request
+      - explicit_action_request
+      - policy_challenge
+      - governance_inquiry
+      - unknown_intent
+    description: Classified intent context for this proposal.
+  selected_routing_category:
+    type: string
+    const: planning_candidate
+    description: Proposal construction is only compatible with planning_candidate routing context.
+  proposal_state:
+    type: string
+    enum:
+      - proposed
+      - rejected
+    description: Proposal artifact construction state.
+  approval_state:
+    type: string
+    const: unapproved
+    description: Explicit marker that proposal is not approved.
+  proposal_title:
+    type: string
+    minLength: 1
+  proposal_intent_summary:
+    type: string
+    minLength: 1
+  proposal_rationale:
+    type: string
+    minLength: 1
+  expected_outcome:
+    type: string
+    minLength: 1
+  assumptions:
+    type: array
+    items:
+      type: string
+  constraints:
+    type: array
+    items:
+      type: string
+  risk_notes:
+    type: array
+    items:
+      type: string
+  review_questions:
+    type: array
+    items:
+      type: string
+  deterministic_reason_code:
+    type: string
+    enum:
+      - PROPOSAL_CONSTRUCTION_ADMISSIBLE
+      - PROPOSAL_PRECONDITION_MISSING_CLASSIFICATION_REFERENCE
+      - PROPOSAL_PRECONDITION_INVALID_CLASSIFICATION_REFERENCE
+      - PROPOSAL_PRECONDITION_MISSING_ROUTING_REFERENCE
+      - PROPOSAL_PRECONDITION_INVALID_ROUTING_REFERENCE
+      - PROPOSAL_PRECONDITION_MISSING_PLAN_REFERENCE
+      - PROPOSAL_PRECONDITION_INVALID_PLAN_REFERENCE
+      - PROPOSAL_PLAN_ROUTING_NOT_COMPATIBLE
+      - PROPOSAL_PLAN_ROUTING_CONSTRAINT_BYPASS_FORBIDDEN
+      - PROPOSAL_APPROVAL_STATE_INVALID
+      - PROPOSAL_APPROVAL_IMPLICATION_FORBIDDEN
+      - PROPOSAL_EXECUTION_IMPLICATION_FORBIDDEN
+      - PROPOSAL_EXECUTABLE_CONTENT_FORBIDDEN
+      - PROPOSAL_TOOL_REFERENCE_FORBIDDEN
+      - PROPOSAL_SCHEDULING_CONTENT_FORBIDDEN
+      - PROPOSAL_CREDENTIAL_CONTENT_FORBIDDEN
+      - PROPOSAL_RESPONSE_BLOCKED_FAIL_CLOSED
+  execution_enabled:
+    const: false
+    description: Must remain false for all proposal artifacts.
+  authority_guarantees:
+    type: object
+    additionalProperties: false
+    required:
+      - can_execute
+      - can_authorize
+      - can_arm
+      - can_attempt_execution
+      - can_mutate_runtime
+      - can_escalate_authority
+    properties:
+      can_execute:
+        const: false
+      can_authorize:
+        const: false
+      can_arm:
+        const: false
+      can_attempt_execution:
+        const: false
+      can_mutate_runtime:
+        const: false
+      can_escalate_authority:
+        const: false
+  immutable:
+    const: true
+    description: Proposal artifact is append-only and immutable.
+  issued_at:
+    type: string
+    format: date-time
+    description: Proposal artifact issuance timestamp.
+
+forbidden_fields:
+  - tool_name
+  - tool_args
+  - command
+  - command_block
+  - script
+  - api_call
+  - credential
+  - secret
+  - token
+  - schedule_at
+  - cron
+  - delay_seconds
+  - execution_context
+  - runtime_target
+  - permission_state
+  - authorization_state
+  - approval_granted
+  - approval_token
+
+forbidden_content_patterns:
+  - "(?i)\\brun\\b"
+  - "(?i)\\bexecute\\b"
+  - "(?i)\\bapply\\b"
+  - "(?i)\\bcurl\\b"
+  - "(?i)\\bkubectl\\b"
+  - "(?i)\\bterraform\\b"
+  - "(?i)\\bssh\\b"
+  - "(?i)```(bash|sh|zsh|powershell|python)"
+  - "(?i)\\bapi key\\b"
+  - "(?i)\\bsecret\\b"
+  - "(?i)\\btoken\\b"
+  - "(?i)\\bcron\\b"
+  - "(?i)\\bschedule\\b"
+  - "(?i)\\bapproved\\b"
+  - "(?i)\\bauthorized\\b"
+  - "(?i)\\bgo ahead\\b"
+
+normative_constraints:
+  - "Proposal artifacts SHALL be inert, descriptive, and non-authoritative."
+  - "Proposal artifacts SHALL be explicitly marked unapproved."
+  - "Proposal artifacts MUST reference valid Phase 35 inert plan and Phase 32 classification artifacts."
+  - "Proposal artifacts MUST preserve plan and routing compatibility constraints."
+  - "Proposal artifacts MUST NOT encode approval grant, execution semantics, tool references, or scheduling directives."
+
+deterministic_validation_order:
+  - "Validate schema shape and required fields."
+  - "Validate classification_record_ref linkage to intent_classification_record.v1 phase 32."
+  - "Validate routing_contract_ref linkage to post_classification_routing_contract.v1 phase 34."
+  - "Validate plan_artifact_ref linkage to inert_plan_artifact.v1 phase 35."
+  - "Validate routing_contract_ref.selected_routing_category equals planning_candidate."
+  - "Validate plan_artifact_ref.selected_routing_category equals planning_candidate."
+  - "Validate selected_routing_category equals planning_candidate."
+  - "Validate approval_state equals unapproved."
+  - "Reject forbidden fields and forbidden content patterns."
+  - "Validate authority_guarantees constants are all false."
+  - "Validate execution_enabled is false."
+  - "Validate immutable is true."
+
+deterministic_rejection_code_priority_order:
+  - PROPOSAL_SCHEMA_INVALID
+  - PROPOSAL_PRECONDITION_MISSING_CLASSIFICATION_REFERENCE
+  - PROPOSAL_PRECONDITION_INVALID_CLASSIFICATION_REFERENCE
+  - PROPOSAL_PRECONDITION_MISSING_ROUTING_REFERENCE
+  - PROPOSAL_PRECONDITION_INVALID_ROUTING_REFERENCE
+  - PROPOSAL_PRECONDITION_MISSING_PLAN_REFERENCE
+  - PROPOSAL_PRECONDITION_INVALID_PLAN_REFERENCE
+  - PROPOSAL_PLAN_ROUTING_NOT_COMPATIBLE
+  - PROPOSAL_PLAN_ROUTING_CONSTRAINT_BYPASS_FORBIDDEN
+  - PROPOSAL_APPROVAL_STATE_INVALID
+  - PROPOSAL_APPROVAL_IMPLICATION_FORBIDDEN
+  - PROPOSAL_EXECUTION_IMPLICATION_FORBIDDEN
+  - PROPOSAL_EXECUTABLE_CONTENT_FORBIDDEN
+  - PROPOSAL_TOOL_REFERENCE_FORBIDDEN
+  - PROPOSAL_SCHEDULING_CONTENT_FORBIDDEN
+  - PROPOSAL_CREDENTIAL_CONTENT_FORBIDDEN
+  - AUTHORITY_FALSE_GUARANTEE_VIOLATION
+  - EXECUTION_ENABLED_VIOLATION
